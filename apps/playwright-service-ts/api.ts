@@ -52,7 +52,6 @@ interface UrlModel {
 }
 
 let browser: Browser;
-let context: BrowserContext;
 
 const initializeBrowser = async () => {
   browser = await chromium.launch({
@@ -67,7 +66,9 @@ const initializeBrowser = async () => {
       "--disable-gpu",
     ],
   });
+};
 
+const createContext = async (): Promise<BrowserContext> => {
   const userAgent = new UserAgent().toString();
   const viewport = null;
 
@@ -88,7 +89,7 @@ const initializeBrowser = async () => {
     };
   }
 
-  context = await browser.newContext(contextOptions);
+  const context = await browser.newContext(contextOptions);
 
   if (BLOCK_MEDIA) {
     await context.route(
@@ -110,12 +111,11 @@ const initializeBrowser = async () => {
     }
     return route.continue();
   });
+
+  return context;
 };
 
 const shutdownBrowser = async () => {
-  if (context) {
-    await context.close();
-  }
   if (browser) {
     await browser.close();
   }
@@ -210,69 +210,76 @@ app.post("/scrape", async (req: Request, res: Response) => {
     );
   }
 
-  if (!browser || !context) {
+  if (!browser) {
     await initializeBrowser();
   }
 
+  const context = await createContext();
   const page = await context.newPage();
 
-  // Set headers if provided
-  if (headers) {
-    await page.setExtraHTTPHeaders(headers);
-  }
-
-  let result: Awaited<ReturnType<typeof scrapePage>>;
   try {
-    // Strategy 1: Normal
-    console.log("Attempting strategy 1: Normal load");
-    result = await scrapePage(
-      page,
-      url,
-      "load",
-      wait_after_load,
-      timeout,
-      check_selector
-    );
-  } catch (error) {
-    console.log(
-      "Strategy 1 failed, attempting strategy 2: Wait until networkidle"
-    );
+    // Set headers if provided
+    if (headers) {
+      await page.setExtraHTTPHeaders(headers);
+    }
+
+    let result: Awaited<ReturnType<typeof scrapePage>>;
     try {
-      // Strategy 2: Wait until networkidle
+      // Strategy 1: Normal
+      console.log("Attempting strategy 1: Normal load");
       result = await scrapePage(
         page,
         url,
-        "networkidle",
+        "load",
         wait_after_load,
         timeout,
         check_selector
       );
-    } catch (finalError) {
-      await page.close();
-      return res
-        .status(500)
-        .json({ error: "An error occurred while fetching the page." });
+    } catch (error) {
+      console.log(
+        "Strategy 1 failed, attempting strategy 2: Wait until networkidle"
+      );
+      try {
+        // Strategy 2: Wait until networkidle
+        result = await scrapePage(
+          page,
+          url,
+          "networkidle",
+          wait_after_load,
+          timeout,
+          check_selector
+        );
+      } catch (finalError) {
+        await page.close();
+        return res
+          .status(500)
+          .json({ error: "An error occurred while fetching the page." });
+      }
     }
+
+    const pageError =
+      result.status !== 200 ? getError(result.status) : undefined;
+
+    if (!pageError) {
+      console.log(`✅ Scrape successful!`);
+    } else {
+      console.log(
+        `🚨 Scrape failed with status code: ${result.status} ${pageError}`
+      );
+    }
+
+    await page.close();
+
+    res.json({
+      content: result.content,
+      pageStatusCode: result.status,
+      contentType: result.contentType,
+      ...(pageError && { pageError }),
+    });
+  } finally {
+    // Ensure context is always closed
+    await context.close();
   }
-
-  const pageError = result.status !== 200 ? getError(result.status) : undefined;
-
-  if (!pageError) {
-    console.log(`✅ Scrape successful!`);
-  } else {
-    console.log(
-      `🚨 Scrape failed with status code: ${result.status} ${pageError}`
-    );
-  }
-
-  await page.close();
-
-  res.json({
-    content: result.content,
-    pageStatusCode: result.status,
-    contentType: result.contentType,
-    ...(pageError && { pageError }),
-  });
 });
 
 app.listen(port, () => {
