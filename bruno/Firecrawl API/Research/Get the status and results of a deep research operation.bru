@@ -1,0 +1,15 @@
+meta {
+  name: Get the status and results of a deep research operation
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/deep-research/:id
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

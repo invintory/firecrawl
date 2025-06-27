@@ -1,0 +1,27 @@
+meta {
+  name: Map multiple URLs based on options
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/map
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "url": "",
+    "search": "",
+    "ignoreSitemap": "",
+    "sitemapOnly": "",
+    "includeSubdomains": "",
+    "limit": "",
+    "timeout": ""
+  }
+}

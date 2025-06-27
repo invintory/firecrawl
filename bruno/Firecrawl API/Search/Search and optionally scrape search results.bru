@@ -1,0 +1,29 @@
+meta {
+  name: Search and optionally scrape search results
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/search
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "query": "",
+    "limit": "",
+    "tbs": "",
+    "location": "",
+    "timeout": "",
+    "ignoreInvalidURLs": "",
+    "scrapeOptions": {
+      "formats": []
+    }
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: Get the errors of a crawl job
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/crawl/:id/errors
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Scrape a single URL and optionally extract information using an LLM
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/scrape
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "url": "https://invintory.com",
+    "formats": ["markdown"],
+    "onlyMainContent": true,
+    "blockAds": true,
+    "removeBase64Images": true
+  }
+}

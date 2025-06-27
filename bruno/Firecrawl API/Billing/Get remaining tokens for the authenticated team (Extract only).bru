@@ -1,0 +1,15 @@
+meta {
+  name: Get remaining tokens for the authenticated team (Extract only)
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/team/token-usage
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

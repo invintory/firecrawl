@@ -1,0 +1,61 @@
+meta {
+  name: Extract structured data from pages using LLMs
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/extract
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "urls": [],
+    "prompt": "",
+    "schema": {},
+    "enableWebSearch": "",
+    "ignoreSitemap": "",
+    "includeSubdomains": "",
+    "showSources": "",
+    "scrapeOptions": {
+      "formats": [],
+      "onlyMainContent": "",
+      "includeTags": [],
+      "excludeTags": [],
+      "maxAge": "",
+      "headers": {},
+      "waitFor": "",
+      "mobile": "",
+      "skipTlsVerification": "",
+      "timeout": "",
+      "parsePDF": "",
+      "jsonOptions": {
+        "schema": {},
+        "systemPrompt": "",
+        "prompt": ""
+      },
+      "actions": [],
+      "location": {
+        "country": "",
+        "languages": []
+      },
+      "removeBase64Images": "",
+      "blockAds": "",
+      "proxy": "",
+      "changeTrackingOptions": {
+        "modes": [],
+        "schema": {},
+        "prompt": "",
+        "tag": ""
+      },
+      "storeInCache": ""
+    },
+    "ignoreInvalidURLs": ""
+  }
+}

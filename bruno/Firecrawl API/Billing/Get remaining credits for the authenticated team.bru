@@ -1,0 +1,15 @@
+meta {
+  name: Get remaining credits for the authenticated team
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/team/credit-usage
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

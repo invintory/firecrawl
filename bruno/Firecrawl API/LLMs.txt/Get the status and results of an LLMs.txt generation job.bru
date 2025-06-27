@@ -1,0 +1,15 @@
+meta {
+  name: Get the status and results of an LLMs.txt generation job
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/llmstxt/:id
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

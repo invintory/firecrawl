@@ -1,0 +1,70 @@
+meta {
+  name: Crawl multiple URLs based on options
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/crawl
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "url": "",
+    "excludePaths": [],
+    "includePaths": [],
+    "maxDepth": "",
+    "maxDiscoveryDepth": "",
+    "ignoreSitemap": "",
+    "ignoreQueryParameters": "",
+    "limit": "",
+    "allowBackwardLinks": "",
+    "allowExternalLinks": "",
+    "delay": "",
+    "webhook": {
+      "url": "",
+      "headers": {},
+      "metadata": {},
+      "events": []
+    },
+    "scrapeOptions": {
+      "formats": [],
+      "onlyMainContent": "",
+      "includeTags": [],
+      "excludeTags": [],
+      "maxAge": "",
+      "headers": {},
+      "waitFor": "",
+      "mobile": "",
+      "skipTlsVerification": "",
+      "timeout": "",
+      "parsePDF": "",
+      "jsonOptions": {
+        "schema": {},
+        "systemPrompt": "",
+        "prompt": ""
+      },
+      "actions": [],
+      "location": {
+        "country": "",
+        "languages": []
+      },
+      "removeBase64Images": "",
+      "blockAds": "",
+      "proxy": "",
+      "changeTrackingOptions": {
+        "modes": [],
+        "schema": {},
+        "prompt": "",
+        "tag": ""
+      },
+      "storeInCache": ""
+    }
+  }
+}

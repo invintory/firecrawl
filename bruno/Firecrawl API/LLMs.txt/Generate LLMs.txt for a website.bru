@@ -1,0 +1,23 @@
+meta {
+  name: Generate LLMs.txt for a website
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/llmstxt
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "url": "",
+    "maxUrls": "",
+    "showFullText": ""
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: Cancel a crawl job
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/crawl/:id
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

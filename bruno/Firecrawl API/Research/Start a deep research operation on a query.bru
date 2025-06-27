@@ -1,0 +1,32 @@
+meta {
+  name: Start a deep research operation on a query
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/deep-research
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "query": "",
+    "maxDepth": "",
+    "timeLimit": "",
+    "maxUrls": "",
+    "analysisPrompt": "",
+    "systemPrompt": "",
+    "formats": [],
+    "jsonOptions": {
+      "schema": {},
+      "systemPrompt": "",
+      "prompt": ""
+    }
+  }
+}

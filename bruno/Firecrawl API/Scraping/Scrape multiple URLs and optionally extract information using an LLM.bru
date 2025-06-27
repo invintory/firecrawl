@@ -1,0 +1,15 @@
+meta {
+  name: Scrape multiple URLs and optionally extract information using an LLM
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/batch/scrape
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

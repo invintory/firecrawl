@@ -1,0 +1,15 @@
+meta {
+  name: Get the status of a crawl job
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/crawl/:id
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

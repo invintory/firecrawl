@@ -1,0 +1,15 @@
+meta {
+  name: Get all active crawls for the authenticated team
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/crawl/active
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

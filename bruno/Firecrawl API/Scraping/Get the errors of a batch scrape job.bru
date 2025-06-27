@@ -1,0 +1,15 @@
+meta {
+  name: Get the errors of a batch scrape job
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/batch/scrape/:id/errors
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
