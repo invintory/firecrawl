@@ -12,7 +12,7 @@ concurrency:
 env:
   PROJECT_ID: invintory
   GAR_LOCATION: us
-  REPOSITORY: firecrawl
+  REPOSITORY: firecrawl-playwright-ts
   IMAGE: firecrawl-playwright
   REGION: us-east1
   SLACK_WEBHOOK_URL: https://hooks.slack.com/services/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
