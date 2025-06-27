@@ -20,9 +20,6 @@ const port = process.env.PORT || 3003;
 
 app.use(bodyParser.json());
 
-const BLOCK_MEDIA =
-  (process.env.BLOCK_MEDIA || "False").toUpperCase() === "TRUE";
-
 const PROXY_SERVER = process.env.PROXY_SERVER || null;
 const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
 const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
@@ -41,7 +38,37 @@ const AD_SERVING_DOMAINS = [
   "facebook.net",
   "fbcdn.net",
   "amazon-adsystem.com",
+  "wootric.com",
+  "klaviyo.com",
+  "posthog.com",
+  "getkoala.com",
+  "survicate.com",
+  "datadoghq.com",
+  "taboola.com",
+  "hotjar.io",
+  "facebook.com",
 ];
+
+const BLOCKED_MEDIA_TYPES = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "mp3",
+  "mp4",
+  "avi",
+  "flac",
+  "ogg",
+  "wav",
+  "webm",
+  "wasm",
+  "woff",
+  "woff2",
+  "css",
+  "ttf",
+]);
 
 interface UrlModel {
   url: string;
@@ -83,24 +110,25 @@ const createContext = async (): Promise<BrowserContext> => {
 
   const context = await browser.newContext(contextOptions);
 
-  if (BLOCK_MEDIA) {
-    await context.route(
-      "**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}",
-      async (route: Route, request: PlaywrightRequest) => {
-        await route.abort();
-      }
-    );
-  }
-
-  // Intercept all requests to avoid loading ads
+  // Intercept all requests to avoid loading ads, media, and JS payloads from other domains
   await context.route("**/*", (route: Route, request: PlaywrightRequest) => {
     const requestUrl = new URL(request.url());
     const hostname = requestUrl.hostname;
 
     if (AD_SERVING_DOMAINS.some((domain) => hostname.includes(domain))) {
-      console.log(hostname);
-      return route.abort();
+      console.log(`Blocking ad request: ${hostname}`);
+      return route.abort("aborted");
     }
+
+    if (
+      BLOCKED_MEDIA_TYPES.has(
+        requestUrl.pathname.split(".")?.pop()?.toLowerCase() || ""
+      )
+    ) {
+      console.log(`Blocking media request: ${request.url()}`);
+      return route.abort("aborted");
+    }
+
     return route.continue();
   });
 
@@ -133,6 +161,25 @@ const scrapePage = async (
   console.log(
     `Navigating to ${url} with waitUntil: ${waitUntil} and timeout: ${timeout}ms`
   );
+
+  // Collect all requests and bytes used
+  const networkData: { url: string; bytes: number }[] = [];
+
+  page.on("response", async (response) => {
+    const url = response.url();
+
+    // Response body is not available for some requests
+    if (response.status() === 200) {
+      try {
+        const bytes = await response.body();
+        networkData.push({ url, bytes: bytes.byteLength });
+        console.log(`${url} - ${Math.round(bytes.byteLength / 1000)} KB`);
+      } catch (error) {
+        console.log(`Error getting body for ${url}: ${error}`);
+      }
+    }
+  });
+
   const response = await page.goto(url, { waitUntil, timeout });
 
   if (waitAfterLoad > 0) {
@@ -163,11 +210,19 @@ const scrapePage = async (
     }
   }
 
+  let totalBytes = 0;
+  for (const item of networkData) {
+    totalBytes += item.bytes;
+  }
+
   return {
     content,
     status: response ? response.status() : null,
     headers,
     contentType: ct,
+    bytes: totalBytes,
+    totalKB: Math.round(totalBytes / 1000),
+    networkData,
   };
 };
 
@@ -205,6 +260,8 @@ app.post("/scrape", async (req: Request, res: Response) => {
   if (!browser) {
     await initializeBrowser();
   }
+
+  const domain = new URL(url).hostname;
 
   const context = await createContext();
   const page = await context.newPage();
@@ -253,18 +310,27 @@ app.post("/scrape", async (req: Request, res: Response) => {
       result.status !== 200 ? getError(result.status) : undefined;
 
     if (!pageError) {
-      console.log(`✅ Scrape successful!`);
+      console.log(
+        `✅ Scrape successful! ${result.totalKB ? `KB: ${result.totalKB}` : ""}`
+      );
     } else {
       console.log(
-        `🚨 Scrape failed with status code: ${result.status} ${pageError}`
+        `🚨 Scrape failed with status code: ${result.status} ${pageError}. ${
+          result.totalKB ? `KB: ${result.totalKB}` : ""
+        }`
       );
     }
 
     await page.close();
 
+    console.log(JSON.stringify(result.networkData, null, 2));
+
     res.json({
       content: result.content,
       pageStatusCode: result.status,
+      bytes: result.bytes,
+      totalKB: result.totalKB,
+      networkData: result.networkData,
       contentType: result.contentType,
       ...(pageError && { pageError }),
     });
