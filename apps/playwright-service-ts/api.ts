@@ -56,15 +56,7 @@ let browser: Browser;
 const initializeBrowser = async () => {
   browser = await chromium.launch({
     headless: false,
-    args: [
-      "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--no-zygote",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-setuid-sandbox",
-      "--no-sandbox",
-      "--disable-gpu",
-    ],
+    args: ["--disable-dev-shm-usage", "--no-first-run", "--no-zygote"],
   });
 };
 
