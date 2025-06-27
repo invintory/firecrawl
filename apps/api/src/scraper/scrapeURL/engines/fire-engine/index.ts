@@ -16,6 +16,7 @@ import {
 import {
   ActionError,
   EngineError,
+  DNSResolutionError,
   SiteError,
   SSLError,
   TimeoutError,
@@ -37,6 +38,7 @@ async function performFireEngineScrape<
     | FireEngineScrapeRequestPlaywright
     | FireEngineScrapeRequestTLSClient,
 >(
+  meta: Meta,
   logger: Logger,
   request: FireEngineScrapeRequestCommon & Engine,
   timeout: number,
@@ -85,6 +87,7 @@ async function performFireEngineScrape<
 
     try {
       status = await fireEngineCheckStatus(
+        meta,
         logger.child({ method: "fireEngineCheckStatus" }),
         scrape.jobId,
         mock,
@@ -97,6 +100,7 @@ async function performFireEngineScrape<
         error instanceof EngineError ||
         error instanceof SiteError ||
         error instanceof SSLError ||
+        error instanceof DNSResolutionError ||
         error instanceof ActionError ||
         error instanceof UnsupportedFileError
       ) {
@@ -229,6 +233,7 @@ export async function scrapeURLWithFireEngineChromeCDP(
   };
 
   let response = await performFireEngineScrape(
+    meta,
     meta.logger.child({
       method: "scrapeURLWithFireEngineChromeCDP/callFireEngine",
       request,
@@ -315,6 +320,7 @@ export async function scrapeURLWithFireEnginePlaywright(
   };
 
   let response = await performFireEngineScrape(
+    meta,
     meta.logger.child({
       method: "scrapeURLWithFireEngineChromeCDP/callFireEngine",
       request,
@@ -375,6 +381,7 @@ export async function scrapeURLWithFireEngineTLSClient(
   };
 
   let response = await performFireEngineScrape(
+    meta,
     meta.logger.child({
       method: "scrapeURLWithFireEngineChromeCDP/callFireEngine",
       request,

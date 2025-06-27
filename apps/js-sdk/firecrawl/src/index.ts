@@ -125,6 +125,7 @@ export interface CrawlScrapeOptions {
   proxy?: "basic" | "stealth" | "auto";
   storeInCache?: boolean;
   maxAge?: number;
+  parsePDF?: boolean;
 }
 
 export type Action = {
@@ -138,6 +139,7 @@ export type Action = {
 } | {
   type: "screenshot",
   fullPage?: boolean,
+  quality?: number,
 } | {
   type: "write",
   text: string,
@@ -227,6 +229,7 @@ export interface CrawlParams {
    * If not provided, the crawler may use the robots.txt crawl delay if available.
    */
   delay?: number;
+  allowSubdomains?: boolean;
   maxConcurrency?: number;
 }
 

@@ -9,10 +9,12 @@ import {
   SiteError,
   SSLError,
   UnsupportedFileError,
+  DNSResolutionError
 } from "../../error";
 import { MockState } from "../../lib/mock";
 import { fireEngineURL } from "./scrape";
 import { getDocFromGCS } from "../../../../lib/gcs-jobs";
+import { Meta } from "../..";
 
 const successSchema = z.object({
   jobId: z.string(),
@@ -123,6 +125,7 @@ export class StillProcessingError extends Error {
 }
 
 export async function fireEngineCheckStatus(
+  meta: Meta,
   logger: Logger,
   jobId: string,
   mock: MockState | null,
@@ -181,10 +184,15 @@ export async function fireEngineCheckStatus(
       const code = status.error.split("Chrome error: ")[1];
 
       if (code.includes("ERR_CERT_") || code.includes("ERR_SSL_") || code.includes("ERR_BAD_SSL_")) {
-        throw new SSLError();
+        throw new SSLError(meta.options.skipTlsVerification);
       } else {
         throw new SiteError(code);
       }
+    } else if (
+      typeof status.error === "string" &&
+      status.error.includes("Dns resolution error for hostname: ")
+    ) {
+      throw new DNSResolutionError(status.error.split("Dns resolution error for hostname: ")[1]);
     } else if (
       typeof status.error === "string" &&
       status.error.includes("File size exceeds")
