@@ -35,10 +35,10 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 RUN npm install
 
-COPY . .
-
 # Install Playwright dependencies
 RUN npx patchright install chromium --with-deps
+
+COPY . .
 
 RUN npm run build
 
