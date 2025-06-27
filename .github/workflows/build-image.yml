@@ -11,7 +11,7 @@ concurrency:
 
 env:
   PROJECT_ID: invintory
-  GAR_LOCATION: us
+  GAR_LOCATION: us-east1
   REPOSITORY: firecrawl-playwright-ts
   IMAGE: firecrawl-playwright
   REGION: us-east1
