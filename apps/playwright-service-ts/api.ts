@@ -12,6 +12,7 @@ import {
 import dotenv from "dotenv";
 import UserAgent from "user-agents";
 import { getError } from "./helpers/get_error";
+import { getResponseFromCache, setResponseInCache } from "./requestCache.js";
 
 dotenv.config();
 
@@ -48,6 +49,7 @@ const AD_SERVING_DOMAINS = [
   "hotjar.io",
   "facebook.com",
   "pingdom.net",
+  "flaviar.com",
 ];
 
 const BLOCKED_MEDIA_TYPES = new Set([
@@ -70,6 +72,8 @@ const BLOCKED_MEDIA_TYPES = new Set([
   "css",
   "ttf",
 ]);
+
+const ELIGIBLE_FOR_CACHE = ["js", "css", "json"];
 
 interface UrlModel {
   url: string;
@@ -112,36 +116,59 @@ const createContext = async (): Promise<BrowserContext> => {
   const context = await browser.newContext(contextOptions);
 
   // Intercept all requests to avoid loading ads, media, and JS payloads from other domains
-  await context.route("**/*", (route: Route, request: PlaywrightRequest) => {
-    const requestUrl = new URL(request.url());
-    const hostname = requestUrl.hostname;
+  await context.route(
+    "**/*",
+    async (route: Route, request: PlaywrightRequest) => {
+      const requestUrl = new URL(request.url());
+      const hostname = requestUrl.hostname;
 
-    if (AD_SERVING_DOMAINS.some((domain) => hostname.includes(domain))) {
-      console.log(`Blocking ad request: ${hostname}`);
-      return route.abort("aborted");
+      if (AD_SERVING_DOMAINS.some((domain) => hostname.includes(domain))) {
+        console.log(`Blocking ad request: ${hostname}`);
+        return route.abort("aborted");
+      }
+
+      if (
+        BLOCKED_MEDIA_TYPES.has(
+          requestUrl.pathname.split(".")?.pop()?.toLowerCase() || ""
+        )
+      ) {
+        console.log(`Blocking media request: ${request.url()}`);
+        return route.abort("aborted");
+      }
+
+      if (
+        requestUrl.pathname.includes("gtag") ||
+        requestUrl.pathname.includes("gtm.js")
+      ) {
+        console.log(`Blocking gtag request: ${request.url()}`);
+        return route.abort("aborted");
+      }
+
+      const contentType = requestUrl.pathname.split(".")?.pop()?.toLowerCase();
+
+      if (eligibleForCache(contentType)) {
+        const response = await getResponseFromCache(request.url());
+        if (response) {
+          console.log(`Cache hit for ${request.url()}`);
+          return route.fulfill({
+            status: response.status,
+            headers: {
+              ...response.headers,
+              "x-cache-fc": "hit",
+            },
+            body: response.body,
+          });
+        }
+      }
+      return route.continue();
     }
-
-    if (
-      BLOCKED_MEDIA_TYPES.has(
-        requestUrl.pathname.split(".")?.pop()?.toLowerCase() || ""
-      )
-    ) {
-      console.log(`Blocking media request: ${request.url()}`);
-      return route.abort("aborted");
-    }
-
-    if (
-      requestUrl.pathname.includes("gtag") ||
-      requestUrl.pathname.includes("gtm.js")
-    ) {
-      console.log(`Blocking gtag request: ${request.url()}`);
-      return route.abort("aborted");
-    }
-
-    return route.continue();
-  });
+  );
 
   return context;
+};
+
+const eligibleForCache = (contentType?: string): boolean => {
+  return ELIGIBLE_FOR_CACHE.some((type) => contentType?.includes(type));
 };
 
 const shutdownBrowser = async () => {
@@ -178,11 +205,37 @@ const scrapePage = async (
     const url = response.url();
 
     // Response body is not available for some requests
-    if (response.status() === 200) {
+    if (response.status() === 200 && response.ok()) {
       try {
-        const bytes = await response.body();
-        networkData.push({ url, bytes: bytes.byteLength });
-        console.log(`${url} - ${Math.round(bytes.byteLength / 1000)} KB`);
+        await response.finished();
+
+        const body = await response.body();
+
+        const allResponseData = await response.allHeaders();
+
+        if (allResponseData["x-cache-fc"] === "hit") {
+          return;
+        }
+
+        networkData.push({ url, bytes: body.byteLength });
+
+        const responseUrl = new URL(url);
+
+        const contentType = responseUrl.pathname
+          .split(".")
+          ?.pop()
+          ?.toLowerCase();
+
+        if (eligibleForCache(contentType)) {
+          // Save in Redis Cache
+          await setResponseInCache(url, {
+            status: response.status(),
+            headers: allResponseData,
+            body,
+          });
+        }
+
+        console.log(`${url} - ${Math.round(body.byteLength / 1000)} KB`);
       } catch (error) {
         console.log(`Error getting body for ${url}: ${error}`);
       }

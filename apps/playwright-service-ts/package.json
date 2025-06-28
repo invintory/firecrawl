@@ -15,6 +15,7 @@
     "body-parser": "^1.20.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "ioredis": "^5.6.1",
     "patchright": "^1.52.5",
     "playwright": "^1.45.0",
     "user-agents": "^1.1.410"

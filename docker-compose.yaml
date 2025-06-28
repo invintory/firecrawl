@@ -52,11 +52,14 @@ services:
     # build: apps/playwright-service-ts
     restart: unless-stopped
     environment:
+      <<: *common-env
       PORT: 3000
       PROXY_SERVER: ${PROXY_SERVER}
       PROXY_USERNAME: ${PROXY_USERNAME}
       PROXY_PASSWORD: ${PROXY_PASSWORD}
       BLOCK_MEDIA: ${BLOCK_MEDIA}
+    depends_on:
+      - redis
     networks:
       - backend
 
