@@ -47,6 +47,7 @@ const AD_SERVING_DOMAINS = [
   "taboola.com",
   "hotjar.io",
   "facebook.com",
+  "pingdom.net",
 ];
 
 const BLOCKED_MEDIA_TYPES = new Set([
@@ -126,6 +127,14 @@ const createContext = async (): Promise<BrowserContext> => {
       )
     ) {
       console.log(`Blocking media request: ${request.url()}`);
+      return route.abort("aborted");
+    }
+
+    if (
+      requestUrl.pathname.includes("gtag") ||
+      requestUrl.pathname.includes("gtm.js")
+    ) {
+      console.log(`Blocking gtag request: ${request.url()}`);
       return route.abort("aborted");
     }
 
@@ -323,7 +332,13 @@ app.post("/scrape", async (req: Request, res: Response) => {
 
     await page.close();
 
-    console.log(JSON.stringify(result.networkData, null, 2));
+    console.log(
+      JSON.stringify(
+        result.networkData.sort((a, b) => b.bytes - a.bytes),
+        null,
+        2
+      )
+    );
 
     res.json({
       content: result.content,
