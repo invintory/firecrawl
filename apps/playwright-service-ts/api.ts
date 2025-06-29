@@ -83,40 +83,27 @@ interface UrlModel {
   check_selector?: string;
 }
 
-let browser: Browser;
-
-const initializeBrowser = async () => {
-  browser = await chromium.launch({
-    headless: false,
-    args: ["--disable-dev-shm-usage", "--no-first-run", "--no-zygote"],
-  });
-};
-
-const createContext = async (): Promise<BrowserContext> => {
-  const userAgent = new UserAgent().toString();
-  const viewport = null;
-
-  const contextOptions: BrowserContextOptions = {
-    userAgent,
-    viewport,
-  };
-
-  if (PROXY_SERVER && PROXY_USERNAME && PROXY_PASSWORD) {
-    contextOptions.proxy = {
-      server: PROXY_SERVER,
-      username: PROXY_USERNAME,
-      password: PROXY_PASSWORD,
-    };
-  } else if (PROXY_SERVER) {
-    contextOptions.proxy = {
-      server: PROXY_SERVER,
-    };
+const createBrowserWithContext = async (): Promise<BrowserContext> => {
+  if (!PROXY_SERVER || !PROXY_USERNAME || !PROXY_PASSWORD) {
+    throw new Error("Proxy server, username, and password are required");
   }
 
-  const context = await browser.newContext(contextOptions);
+  const browser = await chromium.launchPersistentContext(
+    `/tmp/playwright-${Math.random().toString(36).substring(2, 15)}`,
+    {
+      viewport: null,
+      headless: false,
+      channel: "chrome",
+      proxy: {
+        server: PROXY_SERVER,
+        username: PROXY_USERNAME,
+        password: PROXY_PASSWORD,
+      },
+    }
+  );
 
   // Intercept all requests to avoid loading ads, media, and JS payloads from other domains
-  await context.route(
+  await browser.route(
     "**/*",
     async (route: Route, request: PlaywrightRequest) => {
       const requestUrl = new URL(request.url());
@@ -144,9 +131,18 @@ const createContext = async (): Promise<BrowserContext> => {
         return route.abort("aborted");
       }
 
+      if (requestUrl.pathname.startsWith("/_next/image")) {
+        console.log(`Blocking image request: ${request.url()}`);
+        return route.abort("aborted");
+      }
+
+      // Get the extension of the request
       const contentType = requestUrl.pathname.split(".")?.pop()?.toLowerCase();
 
-      if (eligibleForCache(contentType)) {
+      if (
+        eligibleForCache(contentType) &&
+        process.env.REDIS_CACHE_ENABLED === "true"
+      ) {
         const response = await getResponseFromCache(request.url());
         if (response) {
           console.log(`Cache hit for ${request.url()}`);
@@ -164,17 +160,11 @@ const createContext = async (): Promise<BrowserContext> => {
     }
   );
 
-  return context;
+  return browser;
 };
 
 const eligibleForCache = (contentType?: string): boolean => {
   return ELIGIBLE_FOR_CACHE.some((type) => contentType?.includes(type));
-};
-
-const shutdownBrowser = async () => {
-  if (browser) {
-    await browser.close();
-  }
 };
 
 const isValidUrl = (urlString: string): boolean => {
@@ -226,7 +216,10 @@ const scrapePage = async (
           ?.pop()
           ?.toLowerCase();
 
-        if (eligibleForCache(contentType)) {
+        if (
+          eligibleForCache(contentType) &&
+          process.env.REDIS_CACHE_ENABLED === "true"
+        ) {
           // Save in Redis Cache
           await setResponseInCache(url, {
             status: response.status(),
@@ -319,14 +312,8 @@ app.post("/scrape", async (req: Request, res: Response) => {
     );
   }
 
-  if (!browser) {
-    await initializeBrowser();
-  }
-
-  const domain = new URL(url).hostname;
-
-  const context = await createContext();
-  const page = await context.newPage();
+  const browser = await createBrowserWithContext();
+  const page = await browser.newPage();
 
   try {
     // Set headers if provided
@@ -404,19 +391,14 @@ app.post("/scrape", async (req: Request, res: Response) => {
     });
   } finally {
     // Ensure context is always closed
-    await context.close();
+    await browser.close();
   }
 });
 
 app.listen(port, () => {
-  initializeBrowser().then(() => {
-    console.log(`Server is running on port ${port}`);
-  });
+  console.log(`Server is running on port ${port}`);
 });
 
 process.on("SIGINT", () => {
-  shutdownBrowser().then(() => {
-    console.log("Browser closed");
-    process.exit(0);
-  });
+  process.exit(0);
 });

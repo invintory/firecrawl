@@ -17,6 +17,8 @@ x-common-service: &common-service
 
 x-common-env: &common-env
   REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
   REDIS_RATE_LIMIT_URL: ${REDIS_URL:-redis://redis:6379}
   PLAYWRIGHT_MICROSERVICE_URL: ${PLAYWRIGHT_MICROSERVICE_URL:-http://playwright-service:3000/scrape}
   USE_DB_AUTHENTICATION: ${USE_DB_AUTHENTICATION}
@@ -58,6 +60,7 @@ services:
       PROXY_USERNAME: ${PROXY_USERNAME}
       PROXY_PASSWORD: ${PROXY_PASSWORD}
       BLOCK_MEDIA: ${BLOCK_MEDIA}
+      REDIS_CACHE_ENABLED: ${REDIS_CACHE_ENABLED}
     depends_on:
       - redis
     networks:
@@ -98,6 +101,17 @@ services:
     networks:
       - backend
     command: redis-server --bind 0.0.0.0
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    restart: unless-stopped
+    ports:
+      - 5540:5540
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    networks:
+      - backend
 
 networks:
   backend:

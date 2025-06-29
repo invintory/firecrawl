@@ -3,7 +3,20 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const redis = new Redis(process.env.REDIS_URL!);
+if (
+  (!process.env.REDIS_HOST || !process.env.REDIS_PORT) &&
+  process.env.REDIS_CACHE_ENABLED === "true"
+) {
+  throw new Error(
+    "REDIS_HOST and REDIS_PORT must be set when REDIS_CACHE_ENABLED is true"
+  );
+}
+
+const redis = new Redis({
+  host: process.env.REDIS_HOST,
+  port: parseInt(process.env.REDIS_PORT!),
+  db: 2,
+});
 
 export async function getResponseFromCache(url: string): Promise<{
   headers: Record<string, string>;

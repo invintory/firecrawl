@@ -35,8 +35,9 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 RUN npm install
 
-# Install Playwright dependencies
-RUN npx patchright install chromium --with-deps
+# Install browsers using npx to ensure we use the project's patchright version
+# This ensures compatibility between the patchright library and browser versions
+RUN npx patchright install chrome
 
 COPY . .
 
@@ -52,8 +53,13 @@ EXPOSE ${PORT}
 
 # Create a script to start Xvfb and the application
 RUN echo '#!/bin/bash\n\
+# Clean up any existing lock files\n\
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99\n\
+# Start Xvfb in the background\n\
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -nolisten unix &\n\
+# Wait for Xvfb to be ready\n\
 sleep 2\n\
-npm start' > /usr/src/app/start.sh && chmod +x /usr/src/app/start.sh
+# Use exec to replace the shell with npm start for proper signal handling\n\
+exec npm start' > /usr/src/app/start.sh && chmod +x /usr/src/app/start.sh
 
 CMD [ "/usr/src/app/start.sh" ]
