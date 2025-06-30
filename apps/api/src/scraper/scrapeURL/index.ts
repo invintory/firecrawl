@@ -25,6 +25,7 @@ import {
   PDFInsufficientTimeError,
   IndexMissError,
   DNSResolutionError,
+  PDFPrefetchFailed,
 } from "./error";
 import { executeTransformers } from "./transformers";
 import { LLMRefusalError } from "./transformers/llmExtract";
@@ -60,6 +61,7 @@ export type Meta = {
     filePath: string;
     url?: string;
     status: number;
+    proxyUsed: "basic" | "stealth";
   } | null | undefined; // undefined: no prefetch yet, null: prefetch came back empty
   costTracking: CostTracking;
   winnerEngine?: Engine;
@@ -549,6 +551,8 @@ export async function scrapeURL(
       });
     } else if (error instanceof PDFInsufficientTimeError) {
       meta.logger.warn("scrapeURL: Insufficient time to process PDF", { error });
+    } else if (error instanceof PDFPrefetchFailed) {
+      meta.logger.warn("scrapeURL: Failed to prefetch PDF that is protected by anti-bot", { error });
     } else if (error instanceof TimeoutSignal) {
       throw error;
     } else {
