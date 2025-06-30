@@ -158,7 +158,18 @@ const createBrowserWithContext = async (): Promise<{
       username: PROXY_USERNAME,
       password: PROXY_PASSWORD,
     },
+    args: [
+      "--disable-features=TranslateUI,OptimizationHints,OptimizationGuideModelDownloading",
+    ],
   });
+
+  await browser.route(
+    "**/optimizationguide-pa.googleapis.com/*",
+    async (route: Route, request: PlaywrightRequest) => {
+      console.log(`Blocking optimizationguide request: ${request.url()}`);
+      return route.abort("aborted");
+    }
+  );
 
   // Intercept all requests to avoid loading ads, media, and JS payloads from other domains
   await browser.route(
