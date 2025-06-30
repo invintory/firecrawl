@@ -50,6 +50,7 @@ const AD_SERVING_DOMAINS = [
   "facebook.com",
   "pingdom.net",
   "flaviar.com",
+  "optimizationguide-pa.googleapis.com",
 ];
 
 const BLOCKED_MEDIA_TYPES = new Set([
