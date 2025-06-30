@@ -13,6 +13,8 @@ import dotenv from "dotenv";
 import UserAgent from "user-agents";
 import { getError } from "./helpers/get_error";
 import { getResponseFromCache, setResponseInCache } from "./requestCache.js";
+import { promises as fs } from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -76,6 +78,9 @@ const BLOCKED_MEDIA_TYPES = new Set([
 
 const ELIGIBLE_FOR_CACHE = ["js", "css", "json"];
 
+// Track active temp directories for cleanup on shutdown
+const activeTempDirs = new Set<string>();
+
 interface UrlModel {
   url: string;
   wait_after_load?: number;
@@ -84,24 +89,76 @@ interface UrlModel {
   check_selector?: string;
 }
 
-const createBrowserWithContext = async (): Promise<BrowserContext> => {
+// Cleanup function to remove temporary directories
+const cleanupTempDirectory = async (dirPath: string): Promise<void> => {
+  try {
+    await fs.rm(dirPath, { recursive: true, force: true });
+    activeTempDirs.delete(dirPath);
+    console.log(`Cleaned up temporary directory: ${dirPath}`);
+  } catch (error) {
+    console.error(`Failed to clean up directory ${dirPath}:`, error);
+  }
+};
+
+// Cleanup all orphaned playwright directories on startup
+const cleanupOrphanedDirectories = async (): Promise<void> => {
+  try {
+    const tmpDir = "/tmp";
+    const files = await fs.readdir(tmpDir);
+    const playwrightDirs = files.filter((file) =>
+      file.startsWith("playwright-")
+    );
+
+    for (const dir of playwrightDirs) {
+      const dirPath = path.join(tmpDir, dir);
+      try {
+        const stat = await fs.stat(dirPath);
+        if (stat.isDirectory()) {
+          await fs.rm(dirPath, { recursive: true, force: true });
+          console.log(`Cleaned up orphaned directory: ${dirPath}`);
+        }
+      } catch (error) {
+        console.error(
+          `Failed to clean up orphaned directory ${dirPath}:`,
+          error
+        );
+      }
+    }
+
+    if (playwrightDirs.length > 0) {
+      console.log(
+        `Cleaned up ${playwrightDirs.length} orphaned playwright directories`
+      );
+    }
+  } catch (error) {
+    console.error("Failed to cleanup orphaned directories:", error);
+  }
+};
+
+const createBrowserWithContext = async (): Promise<{
+  browser: BrowserContext;
+  tempDir: string;
+}> => {
   if (!PROXY_SERVER || !PROXY_USERNAME || !PROXY_PASSWORD) {
     throw new Error("Proxy server, username, and password are required");
   }
 
-  const browser = await chromium.launchPersistentContext(
-    `/tmp/playwright-${Math.random().toString(36).substring(2, 15)}`,
-    {
-      viewport: null,
-      headless: false,
-      channel: "chrome",
-      proxy: {
-        server: PROXY_SERVER,
-        username: PROXY_USERNAME,
-        password: PROXY_PASSWORD,
-      },
-    }
-  );
+  const tempDir = `/tmp/playwright-${Math.random()
+    .toString(36)
+    .substring(2, 15)}`;
+
+  activeTempDirs.add(tempDir);
+
+  const browser = await chromium.launchPersistentContext(tempDir, {
+    viewport: null,
+    headless: false,
+    channel: "chrome",
+    proxy: {
+      server: PROXY_SERVER,
+      username: PROXY_USERNAME,
+      password: PROXY_PASSWORD,
+    },
+  });
 
   // Intercept all requests to avoid loading ads, media, and JS payloads from other domains
   await browser.route(
@@ -161,7 +218,7 @@ const createBrowserWithContext = async (): Promise<BrowserContext> => {
     }
   );
 
-  return browser;
+  return { browser, tempDir };
 };
 
 const eligibleForCache = (contentType?: string): boolean => {
@@ -313,7 +370,7 @@ app.post("/scrape", async (req: Request, res: Response) => {
     );
   }
 
-  const browser = await createBrowserWithContext();
+  const { browser, tempDir } = await createBrowserWithContext();
   const page = await browser.newPage();
 
   try {
@@ -350,6 +407,8 @@ app.post("/scrape", async (req: Request, res: Response) => {
         );
       } catch (finalError) {
         await page.close();
+        await browser.close();
+        await cleanupTempDirectory(tempDir);
         return res
           .status(500)
           .json({ error: "An error occurred while fetching the page." });
@@ -393,13 +452,33 @@ app.post("/scrape", async (req: Request, res: Response) => {
   } finally {
     // Ensure context is always closed
     await browser.close();
+    await cleanupTempDirectory(tempDir);
   }
 });
 
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
+  // Clean up any orphaned directories from previous runs
+  cleanupOrphanedDirectories();
+
+  // Set up periodic cleanup every hour
+  setInterval(() => {
+    console.log("Running periodic cleanup of orphaned directories...");
+    cleanupOrphanedDirectories();
+  }, 60 * 60 * 1000); // Every hour
 });
 
-process.on("SIGINT", () => {
+// Graceful shutdown handler
+const gracefulShutdown = async () => {
+  console.log("Shutting down gracefully...");
+
+  // Clean up all active temp directories
+  for (const tempDir of activeTempDirs) {
+    await cleanupTempDirectory(tempDir);
+  }
+
   process.exit(0);
-});
+};
+
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);
