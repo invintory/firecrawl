@@ -214,7 +214,12 @@ const createBrowserWithContext = async (): Promise<{
           });
         }
       }
-      return route.continue();
+      return route.continue({
+        headers: {
+          ...request.headers(),
+          // "Accept-Encoding": "gzip, deflate, br, zstd",
+        },
+      });
     }
   );
 
@@ -247,7 +252,12 @@ const scrapePage = async (
   );
 
   // Collect all requests and bytes used
-  const networkData: { url: string; bytes: number }[] = [];
+  const networkData: {
+    url: string;
+    bytes: number;
+    contentEncoding: string | undefined;
+    contentLength: string | undefined;
+  }[] = [];
 
   page.on("response", async (response) => {
     const url = response.url();
@@ -265,7 +275,16 @@ const scrapePage = async (
           return;
         }
 
-        networkData.push({ url, bytes: body.byteLength });
+        const contentEncoding = allResponseData["content-encoding"];
+
+        const contentLength = allResponseData["content-length"];
+
+        networkData.push({
+          url,
+          bytes: body.byteLength,
+          contentEncoding,
+          contentLength,
+        });
 
         const responseUrl = new URL(url);
 
