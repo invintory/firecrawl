@@ -8,7 +8,6 @@ import {
   Page,
 } from "patchright";
 import dotenv from "dotenv";
-import UserAgent from "user-agents";
 import { getError } from "./helpers/get_error";
 import { getResponseFromCache, setResponseInCache } from "./requestCache";
 import { promises as fs } from "fs";
