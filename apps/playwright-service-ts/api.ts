@@ -2,19 +2,17 @@ import express, { Request, Response } from "express";
 import bodyParser from "body-parser";
 import {
   chromium,
-  Browser,
   BrowserContext,
   Route,
   Request as PlaywrightRequest,
   Page,
-  BrowserContextOptions,
 } from "patchright";
 import dotenv from "dotenv";
 import UserAgent from "user-agents";
 import { getError } from "./helpers/get_error";
-import { getResponseFromCache, setResponseInCache } from "./requestCache.js";
+import { getResponseFromCache, setResponseInCache } from "./requestCache";
 import { promises as fs } from "fs";
-import path from "path";
+import logger from "./helpers/logger";
 
 dotenv.config();
 
@@ -78,9 +76,6 @@ const BLOCKED_MEDIA_TYPES = new Set([
 
 const ELIGIBLE_FOR_CACHE = ["js", "css", "json"];
 
-// Track active temp directories for cleanup on shutdown
-const activeTempDirs = new Set<string>();
-
 interface UrlModel {
   url: string;
   wait_after_load?: number;
@@ -93,45 +88,9 @@ interface UrlModel {
 const cleanupTempDirectory = async (dirPath: string): Promise<void> => {
   try {
     await fs.rm(dirPath, { recursive: true, force: true });
-    activeTempDirs.delete(dirPath);
-    console.log(`Cleaned up temporary directory: ${dirPath}`);
+    logger.debug(`Cleaned up temporary directory: ${dirPath}`);
   } catch (error) {
-    console.error(`Failed to clean up directory ${dirPath}:`, error);
-  }
-};
-
-// Cleanup all orphaned playwright directories on startup
-const cleanupOrphanedDirectories = async (): Promise<void> => {
-  try {
-    const tmpDir = "/tmp";
-    const files = await fs.readdir(tmpDir);
-    const playwrightDirs = files.filter((file) =>
-      file.startsWith("playwright-")
-    );
-
-    for (const dir of playwrightDirs) {
-      const dirPath = path.join(tmpDir, dir);
-      try {
-        const stat = await fs.stat(dirPath);
-        if (stat.isDirectory()) {
-          await fs.rm(dirPath, { recursive: true, force: true });
-          console.log(`Cleaned up orphaned directory: ${dirPath}`);
-        }
-      } catch (error) {
-        console.error(
-          `Failed to clean up orphaned directory ${dirPath}:`,
-          error
-        );
-      }
-    }
-
-    if (playwrightDirs.length > 0) {
-      console.log(
-        `Cleaned up ${playwrightDirs.length} orphaned playwright directories`
-      );
-    }
-  } catch (error) {
-    console.error("Failed to cleanup orphaned directories:", error);
+    logger.error(`Failed to clean up directory ${dirPath}:`, error);
   }
 };
 
@@ -146,8 +105,6 @@ const createBrowserWithContext = async (): Promise<{
   const tempDir = `/tmp/playwright-${Math.random()
     .toString(36)
     .substring(2, 15)}`;
-
-  activeTempDirs.add(tempDir);
 
   const browser = await chromium.launchPersistentContext(tempDir, {
     viewport: null,
@@ -166,7 +123,10 @@ const createBrowserWithContext = async (): Promise<{
   await browser.route(
     "**/optimizationguide-pa.googleapis.com/*",
     async (route: Route, request: PlaywrightRequest) => {
-      console.log(`Blocking optimizationguide request: ${request.url()}`);
+      logger.debug({
+        message: "Blocking optimizationguide request",
+        url: request.url(),
+      });
       return route.abort("aborted");
     }
   );
@@ -179,7 +139,10 @@ const createBrowserWithContext = async (): Promise<{
       const hostname = requestUrl.hostname;
 
       if (AD_SERVING_DOMAINS.some((domain) => hostname.includes(domain))) {
-        console.log(`Blocking ad request: ${hostname}`);
+        logger.debug({
+          message: "Blocking ad request",
+          url: request.url(),
+        });
         return route.abort("aborted");
       }
 
@@ -188,7 +151,10 @@ const createBrowserWithContext = async (): Promise<{
           requestUrl.pathname.split(".")?.pop()?.toLowerCase() || ""
         )
       ) {
-        console.log(`Blocking media request: ${request.url()}`);
+        logger.debug({
+          message: "Blocking media request",
+          url: request.url(),
+        });
         return route.abort("aborted");
       }
 
@@ -196,12 +162,18 @@ const createBrowserWithContext = async (): Promise<{
         requestUrl.pathname.includes("gtag") ||
         requestUrl.pathname.includes("gtm.js")
       ) {
-        console.log(`Blocking gtag request: ${request.url()}`);
+        logger.debug({
+          message: "Blocking gtag request",
+          url: request.url(),
+        });
         return route.abort("aborted");
       }
 
       if (requestUrl.pathname.startsWith("/_next/image")) {
-        console.log(`Blocking image request: ${request.url()}`);
+        logger.debug({
+          message: "Blocking image request",
+          url: request.url(),
+        });
         return route.abort("aborted");
       }
 
@@ -214,7 +186,10 @@ const createBrowserWithContext = async (): Promise<{
       ) {
         const response = await getResponseFromCache(request.url());
         if (response) {
-          console.log(`Cache hit for ${request.url()}`);
+          logger.debug({
+            message: "Cache hit",
+            url: request.url(),
+          });
           return route.fulfill({
             status: response.status,
             headers: {
@@ -258,9 +233,12 @@ const scrapePage = async (
   timeout: number,
   checkSelector: string | undefined
 ) => {
-  console.log(
-    `Navigating to ${url} with waitUntil: ${waitUntil} and timeout: ${timeout}ms`
-  );
+  logger.info({
+    message: "Navigating to page",
+    url,
+    waitUntil,
+    timeout,
+  });
 
   // Collect all requests and bytes used
   const networkData: {
@@ -316,9 +294,17 @@ const scrapePage = async (
           });
         }
 
-        console.log(`${url} - ${Math.round(body.byteLength / 1000)} KB`);
+        logger.debug({
+          message: "Response received",
+          url,
+          bytes: Math.round(body.byteLength / 1000),
+        });
       } catch (error) {
-        console.log(`Error getting body for ${url}: ${error}`);
+        logger.error({
+          message: "Error getting body for url",
+          url,
+          error,
+        });
       }
     }
   });
@@ -378,13 +364,14 @@ app.post("/scrape", async (req: Request, res: Response) => {
     check_selector,
   }: UrlModel = req.body;
 
-  console.log(`================= Scrape Request =================`);
-  console.log(`URL: ${url}`);
-  console.log(`Wait After Load: ${wait_after_load}`);
-  console.log(`Timeout: ${timeout}`);
-  console.log(`Headers: ${headers ? JSON.stringify(headers) : "None"}`);
-  console.log(`Check Selector: ${check_selector ? check_selector : "None"}`);
-  console.log(`==================================================`);
+  logger.info({
+    message: "Scrape Request",
+    url,
+    wait_after_load,
+    timeout,
+    headers,
+    check_selector,
+  });
 
   if (!url) {
     return res.status(400).json({ error: "URL is required" });
@@ -395,9 +382,10 @@ app.post("/scrape", async (req: Request, res: Response) => {
   }
 
   if (!PROXY_SERVER) {
-    console.warn(
-      "⚠️ WARNING: No proxy server provided. Your IP address may be blocked."
-    );
+    logger.warn({
+      message:
+        "⚠️ WARNING: No proxy server provided. Your IP address may be blocked.",
+    });
   }
 
   const { browser, tempDir } = await createBrowserWithContext();
@@ -412,7 +400,9 @@ app.post("/scrape", async (req: Request, res: Response) => {
     let result: Awaited<ReturnType<typeof scrapePage>>;
     try {
       // Strategy 1: Normal
-      console.log("Attempting strategy 1: Normal load");
+      logger.info({
+        message: "Attempting strategy 1: Normal load",
+      });
       result = await scrapePage(
         page,
         url,
@@ -422,9 +412,10 @@ app.post("/scrape", async (req: Request, res: Response) => {
         check_selector
       );
     } catch (error) {
-      console.log(
-        "Strategy 1 failed, attempting strategy 2: Wait until networkidle"
-      );
+      logger.info({
+        message:
+          "Strategy 1 failed, attempting strategy 2: Wait until networkidle",
+      });
       try {
         // Strategy 2: Wait until networkidle
         result = await scrapePage(
@@ -449,26 +440,25 @@ app.post("/scrape", async (req: Request, res: Response) => {
       result.status !== 200 ? getError(result.status) : undefined;
 
     if (!pageError) {
-      console.log(
-        `✅ Scrape successful! ${result.totalKB ? `KB: ${result.totalKB}` : ""}`
-      );
+      logger.info({
+        message: "✅ Scrape successful!",
+        totalKB: result.totalKB,
+      });
     } else {
-      console.log(
-        `🚨 Scrape failed with status code: ${result.status} ${pageError}. ${
-          result.totalKB ? `KB: ${result.totalKB}` : ""
-        }`
-      );
+      logger.error({
+        message: "🚨 Scrape failed",
+        status: result.status,
+        pageError,
+        totalKB: result.totalKB,
+      });
     }
 
     await page.close();
 
-    console.log(
-      JSON.stringify(
-        result.networkData.sort((a, b) => b.bytes - a.bytes),
-        null,
-        2
-      )
-    );
+    logger.debug({
+      message: "Network data",
+      networkData: result.networkData.sort((a, b) => b.bytes - a.bytes),
+    });
 
     res.json({
       content: result.content,
@@ -487,25 +477,16 @@ app.post("/scrape", async (req: Request, res: Response) => {
 });
 
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
-  // Clean up any orphaned directories from previous runs
-  cleanupOrphanedDirectories();
-
-  // Set up periodic cleanup every hour
-  setInterval(() => {
-    console.log("Running periodic cleanup of orphaned directories...");
-    cleanupOrphanedDirectories();
-  }, 60 * 60 * 1000); // Every hour
+  logger.info({
+    message: `Server is running on port ${port}`,
+  });
 });
 
 // Graceful shutdown handler
 const gracefulShutdown = async () => {
-  console.log("Shutting down gracefully...");
-
-  // Clean up all active temp directories
-  for (const tempDir of activeTempDirs) {
-    await cleanupTempDirectory(tempDir);
-  }
+  logger.info({
+    message: "Shutting down gracefully...",
+  });
 
   process.exit(0);
 };

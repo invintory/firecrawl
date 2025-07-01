@@ -65,6 +65,8 @@ services:
       - redis
     networks:
       - backend
+    tmpfs:
+      - /tmp:size=1G,mode=1777
 
   api:
     <<: *common-service
