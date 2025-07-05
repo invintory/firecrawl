@@ -15,10 +15,204 @@ import logger from "./helpers/logger";
 
 dotenv.config();
 
+interface BrowserPoolItem {
+  browser: BrowserContext;
+  tempDir: string;
+}
+
+class BrowserPool {
+  private availableBrowsers: BrowserPoolItem[] = [];
+  private waitingQueue: Array<{
+    resolve: (browser: BrowserPoolItem) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  private readonly poolSize = 4;
+  private isInitialized = false;
+
+  async initialize() {
+    if (this.isInitialized) return;
+
+    logger.info({
+      message: "Initializing browser pool",
+      poolSize: this.poolSize,
+    });
+
+    for (let i = 0; i < this.poolSize; i++) {
+      try {
+        const { browser, tempDir } = await createBrowserWithContext();
+        this.availableBrowsers.push({ browser, tempDir });
+        logger.debug({
+          message: `Browser ${i + 1} initialized`,
+        });
+      } catch (error) {
+        logger.error({
+          message: `Failed to initialize browser ${i + 1}`,
+          error,
+        });
+        throw error;
+      }
+    }
+
+    this.isInitialized = true;
+    logger.info({
+      message: "Browser pool initialized successfully",
+      availableBrowsers: this.availableBrowsers.length,
+    });
+  }
+
+  async getBrowser(timeoutMs: number = 5000): Promise<BrowserPoolItem> {
+    return new Promise((resolve, reject) => {
+      // Set a timeout to prevent hanging requests
+      const timeout = setTimeout(() => {
+        // Remove from waiting queue if still there
+        const index = this.waitingQueue.findIndex(
+          (item) => item.resolve === resolve
+        );
+        if (index >= 0) {
+          this.waitingQueue.splice(index, 1);
+        }
+        reject(new Error(`Timeout waiting for browser (${timeoutMs}ms)`));
+      }, timeoutMs);
+
+      const resolveWithCleanup = (browser: BrowserPoolItem) => {
+        clearTimeout(timeout);
+        resolve(browser);
+      };
+
+      const rejectWithCleanup = (error: Error) => {
+        clearTimeout(timeout);
+        reject(error);
+      };
+
+      if (this.availableBrowsers.length > 0) {
+        const browser = this.availableBrowsers.shift()!;
+        logger.debug({
+          message: "Browser acquired from pool",
+          availableBrowsers: this.availableBrowsers.length,
+          waitingQueue: this.waitingQueue.length,
+        });
+        resolveWithCleanup(browser);
+      } else {
+        logger.debug({
+          message: "No browsers available, adding to waiting queue",
+          waitingQueue: this.waitingQueue.length + 1,
+        });
+        this.waitingQueue.push({
+          resolve: resolveWithCleanup,
+          reject: rejectWithCleanup,
+        });
+      }
+    });
+  }
+
+  async releaseBrowser(item: BrowserPoolItem) {
+    try {
+      logger.debug({
+        message: "Releasing browser",
+        availableBrowsers: this.availableBrowsers.length,
+        waitingQueue: this.waitingQueue.length,
+      });
+
+      // Close the browser and clean up
+      await item.browser.close();
+      await cleanupTempDirectory(item.tempDir);
+
+      // Create a new browser
+      const { browser, tempDir } = await createBrowserWithContext();
+      const newBrowserItem = { browser, tempDir };
+
+      // Check if anyone is waiting
+      if (this.waitingQueue.length > 0) {
+        const waiter = this.waitingQueue.shift()!;
+        logger.debug({
+          message: "Browser released to waiting request",
+          waitingQueue: this.waitingQueue.length,
+        });
+        waiter.resolve(newBrowserItem);
+      } else {
+        this.availableBrowsers.push(newBrowserItem);
+        logger.debug({
+          message: "Browser returned to pool",
+          availableBrowsers: this.availableBrowsers.length,
+        });
+      }
+    } catch (error) {
+      logger.error({
+        message: "Error releasing browser",
+        error,
+      });
+
+      // If anyone is waiting, reject them
+      if (this.waitingQueue.length > 0) {
+        const waiter = this.waitingQueue.shift()!;
+        waiter.reject(error as Error);
+      }
+    }
+  }
+
+  async cleanup() {
+    logger.info({
+      message: "Cleaning up browser pool",
+      availableBrowsers: this.availableBrowsers.length,
+    });
+
+    // Close all available browsers
+    for (const item of this.availableBrowsers) {
+      try {
+        await item.browser.close();
+        await cleanupTempDirectory(item.tempDir);
+      } catch (error) {
+        logger.error({
+          message: "Error cleaning up browser",
+          error,
+        });
+      }
+    }
+
+    this.availableBrowsers = [];
+
+    // Reject all waiting requests
+    for (const waiter of this.waitingQueue) {
+      waiter.reject(new Error("Browser pool is shutting down"));
+    }
+
+    this.waitingQueue = [];
+    this.isInitialized = false;
+  }
+
+  // Getter methods for health check
+  getAvailableBrowsersCount(): number {
+    return this.availableBrowsers.length;
+  }
+
+  getWaitingQueueCount(): number {
+    return this.waitingQueue.length;
+  }
+
+  getIsInitialized(): boolean {
+    return this.isInitialized;
+  }
+}
+
+const browserPool = new BrowserPool();
+
 const app = express();
-const port = process.env.PORT || 3003;
+const port = process.env.PORT || 3004;
 
 app.use(bodyParser.json());
+
+// Health check endpoint
+app.get("/health", (req: Request, res: Response) => {
+  res.json({
+    status: "healthy",
+    port,
+    browserPool: {
+      availableBrowsers: browserPool.getAvailableBrowsersCount(),
+      waitingQueue: browserPool.getWaitingQueueCount(),
+      isInitialized: browserPool.getIsInitialized(),
+    },
+  });
+});
 
 const PROXY_SERVER = process.env.PROXY_SERVER || null;
 const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
@@ -179,8 +373,12 @@ const createBrowserWithContext = async (): Promise<{
       // Get the extension of the request
       const contentType = requestUrl.pathname.split(".")?.pop()?.toLowerCase();
 
+      const isGoogleFont =
+        requestUrl.hostname.includes("fonts.gstatic.com") ||
+        requestUrl.hostname.includes("fonts.googleapis.com");
+
       if (
-        eligibleForCache(contentType) &&
+        (eligibleForCache(contentType) || isGoogleFont) &&
         process.env.REDIS_CACHE_ENABLED === "true"
       ) {
         const response = await getResponseFromCache(request.url());
@@ -387,7 +585,19 @@ app.post("/scrape", async (req: Request, res: Response) => {
     });
   }
 
-  const { browser, tempDir } = await createBrowserWithContext();
+  // Get browser from pool
+  let browserItem: BrowserPoolItem;
+  try {
+    browserItem = await browserPool.getBrowser(5000);
+  } catch (error) {
+    logger.error({
+      message: "Failed to get browser from pool",
+      error,
+    });
+    return res.status(500).json({ error: "Failed to get browser from pool" });
+  }
+
+  const { browser } = browserItem;
   const page = await browser.newPage();
 
   try {
@@ -427,8 +637,7 @@ app.post("/scrape", async (req: Request, res: Response) => {
         );
       } catch (finalError) {
         await page.close();
-        await browser.close();
-        await cleanupTempDirectory(tempDir);
+        await browserPool.releaseBrowser(browserItem);
         return res
           .status(500)
           .json({ error: "An error occurred while fetching the page." });
@@ -469,16 +678,27 @@ app.post("/scrape", async (req: Request, res: Response) => {
       ...(pageError && { pageError }),
     });
   } finally {
-    // Ensure context is always closed
-    await browser.close();
-    await cleanupTempDirectory(tempDir);
+    // Release browser back to pool
+    await browserPool.releaseBrowser(browserItem);
   }
 });
 
-app.listen(port, () => {
+app.listen(port, async () => {
   logger.info({
     message: `Server is running on port ${port}`,
   });
+
+  // Initialize browser pool
+  try {
+    await browserPool.initialize();
+  } catch (error) {
+    console.log(error);
+    logger.error({
+      message: "Failed to initialize browser pool",
+      error,
+    });
+    process.exit(1);
+  }
 });
 
 // Graceful shutdown handler
@@ -486,6 +706,9 @@ const gracefulShutdown = async () => {
   logger.info({
     message: "Shutting down gracefully...",
   });
+
+  // Clean up browser pool
+  await browserPool.cleanup();
 
   process.exit(0);
 };
