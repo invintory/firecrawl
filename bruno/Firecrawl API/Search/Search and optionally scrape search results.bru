@@ -16,14 +16,14 @@ auth:bearer {
 
 body:json {
   {
-    "query": "Caymus Cabernet Sauvignon 2014 price -site:wine-searcher.com",
-    "limit": 5,
+    "query": "Caymus Cabernet Sauvignon 2014 price",
+    "limit": 1,
   //   "tbs": "",
   //   "location": "",
     "timeout": 30000,
     "ignoreInvalidURLs": true,
     "scrapeOptions": {
-      "formats": ["markdown"]
+      "formats": ["html"]
     }
   }
 }
