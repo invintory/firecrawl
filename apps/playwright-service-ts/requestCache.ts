@@ -3,26 +3,35 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+let redis: Redis;
+
 if (
-  (!process.env.REDIS_HOST || !process.env.REDIS_PORT) &&
+  (!process.env.REDIS_HOST ||
+    !process.env.REDIS_PORT ||
+    process.env.REDIS_HOST === "" ||
+    process.env.REDIS_PORT === "") &&
   process.env.REDIS_CACHE_ENABLED === "true"
 ) {
   throw new Error(
     "REDIS_HOST and REDIS_PORT must be set when REDIS_CACHE_ENABLED is true"
   );
+} else {
+  redis = new Redis({
+    host: process.env.REDIS_HOST || "localhost",
+    port: parseInt(process.env.REDIS_PORT || "6379"),
+    db: 2,
+  });
 }
-
-const redis = new Redis({
-  host: process.env.REDIS_HOST || "localhost",
-  port: parseInt(process.env.REDIS_PORT || "6379"),
-  db: 2,
-});
 
 export async function getResponseFromCache(url: string): Promise<{
   headers: Record<string, string>;
   body: Buffer;
   status: number;
 } | null> {
+  if (!redis) {
+    return null;
+  }
+
   const response = await redis.get(`response:${url}`);
   if (response) {
     const parsedResponse = JSON.parse(response);
@@ -43,6 +52,10 @@ export async function setResponseInCache(
     body: Buffer;
   }
 ) {
+  if (!redis) {
+    return;
+  }
+
   return await redis.set(
     `response:${url}`,
     JSON.stringify({
