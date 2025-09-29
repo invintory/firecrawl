@@ -475,6 +475,12 @@ app.post("/scrape", async (req: Request, res: Response) => {
   }
 });
 
+app.get("/health", (req: Request, res: Response) => {
+  res.json({
+    status: "ok",
+  });
+});
+
 app.listen(port, () => {
   logger.info({
     message: `Server is running on port ${port}`,
