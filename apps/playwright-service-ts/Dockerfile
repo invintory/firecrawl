@@ -31,17 +31,20 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /usr/src/app
-COPY package*.json ./
-RUN npm install
+# Enable pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
 
-# Install browsers using npx to ensure we use the project's patchright version
+WORKDIR /usr/src/app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+# Install browsers using pnpm to ensure we use the project's patchright version
 # This ensures compatibility between the patchright library and browser versions
-RUN npx patchright install chrome
+RUN pnpm exec patchright install chrome
 
 COPY . .
 
-RUN npm run build
+RUN pnpm run build
 
 ARG PORT
 ENV PORT=${PORT}
@@ -59,7 +62,7 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99\n\
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -nolisten unix &\n\
 # Wait for Xvfb to be ready\n\
 sleep 2\n\
-# Use exec to replace the shell with npm start for proper signal handling\n\
-exec npm start' > /usr/src/app/start.sh && chmod +x /usr/src/app/start.sh
+# Use exec to replace the shell with pnpm start for proper signal handling\n\
+exec pnpm start' > /usr/src/app/start.sh && chmod +x /usr/src/app/start.sh
 
 CMD [ "/usr/src/app/start.sh" ]

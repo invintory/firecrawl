@@ -21,14 +21,14 @@ importers:
         specifier: ^5.6.1
         version: 5.6.1
       patchright:
-        specifier: ^1.52.5
-        version: 1.52.5
+        specifier: ^1.56.0
+        version: 1.56.0
       pino:
         specifier: ^9.7.0
         version: 9.7.0
       playwright:
-        specifier: ^1.45.0
-        version: 1.53.1
+        specifier: ^1.56.0
+        version: 1.56.0
       user-agents:
         specifier: ^1.1.410
         version: 1.1.455
@@ -411,13 +411,13 @@ packages:
     resolution: {integrity: sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==}
     engines: {node: '>= 0.8'}
 
-  patchright-core@1.52.5:
-    resolution: {integrity: sha512-8rnLVEK9jDZWzFPy2hCQrp4xhU7zgE8IqseZyjGkgxf+jpAWTuGNgIAlcsKZMfQrDL8j1mZgRIGNAQT00nk6QA==}
+  patchright-core@1.56.0:
+    resolution: {integrity: sha512-CcNyLrlLHP9KS1jI4nYcF6mdQ5KS0YyZqc7siRb6UdFiKJRsWv0B2voB4IbslwNyntZ3GGqF0bPMu84y8AewEQ==}
     engines: {node: '>=18'}
     hasBin: true
 
-  patchright@1.52.5:
-    resolution: {integrity: sha512-wmRpsF9n02j0S+YDk0U3ouuWipHbUowwxbf/4K4G9ng311vvugoo8WndbU/fCsGtme8gYNfcEGcpfF6/L1NXHg==}
+  patchright@1.56.0:
+    resolution: {integrity: sha512-hNbz+GaMJw7kSIeXaaM0L5Yk8NKeO48EJ6PlQqc/f1KHyJnre/eyLQ2XzWFyV6ZkzmSKA/GjcwAoUrL08jUkXA==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -438,13 +438,13 @@ packages:
     resolution: {integrity: sha512-vnMCM6xZTb1WDmLvtG2lE/2p+t9hDEIvTWJsu6FejkE62vB7gDhvzrpFR4Cw2to+9JNQxVnkAKVPA1KPB98vWg==}
     hasBin: true
 
-  playwright-core@1.53.1:
-    resolution: {integrity: sha512-Z46Oq7tLAyT0lGoFx4DOuB1IA9D1TPj0QkYxpPVUnGDqHHvDpCftu1J2hM2PiWsNMoZh8+LQaarAWcDfPBc6zg==}
+  playwright-core@1.56.0:
+    resolution: {integrity: sha512-1SXl7pMfemAMSDn5rkPeZljxOCYAmQnYLBTExuh6E8USHXGSX3dx6lYZN/xPpTz1vimXmPA9CDnILvmJaB8aSQ==}
     engines: {node: '>=18'}
     hasBin: true
 
-  playwright@1.53.1:
-    resolution: {integrity: sha512-LJ13YLr/ocweuwxyGf1XNFWIU4M2zUSo149Qbp+A4cpwDjsxRPj7k6H25LBrEHiEwxvRbD8HdwvQmRMSvquhYw==}
+  playwright@1.56.0:
+    resolution: {integrity: sha512-X5Q1b8lOdWIE4KAoHpW3SE8HvUB+ZZsUoN64ZhjnN8dOb1UpujxBtENGiZFE+9F/yhzJwYa+ca3u43FeLbboHA==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -948,11 +948,11 @@ snapshots:
 
   parseurl@1.3.3: {}
 
-  patchright-core@1.52.5: {}
+  patchright-core@1.56.0: {}
 
-  patchright@1.52.5:
+  patchright@1.56.0:
     dependencies:
-      patchright-core: 1.52.5
+      patchright-core: 1.56.0
     optionalDependencies:
       fsevents: 2.3.2
 
@@ -994,11 +994,11 @@ snapshots:
       sonic-boom: 4.2.0
       thread-stream: 3.1.0
 
-  playwright-core@1.53.1: {}
+  playwright-core@1.56.0: {}
 
-  playwright@1.53.1:
+  playwright@1.56.0:
     dependencies:
-      playwright-core: 1.53.1
+      playwright-core: 1.56.0
     optionalDependencies:
       fsevents: 2.3.2
 
