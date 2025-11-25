@@ -9,10 +9,12 @@ import {
   SiteError,
   SSLError,
   UnsupportedFileError,
-  DNSResolutionError
+  DNSResolutionError,
+  FEPageLoadFailed,
+  ProxySelectionError,
 } from "../../error";
 import { MockState } from "../../lib/mock";
-import { fireEngineURL } from "./scrape";
+import { fireEngineStagingURL, fireEngineURL } from "./scrape";
 import { getDocFromGCS } from "../../../../lib/gcs-jobs";
 import { Meta } from "../..";
 
@@ -46,43 +48,46 @@ const successSchema = z.object({
     })
     .array()
     .optional(),
-  actionResults: z.union([
-    z.object({
-      idx: z.number(),
-      type: z.literal("screenshot"),
-      result: z.object({
-        path: z.string(),
-      }),
-    }),
-    z.object({
-      idx: z.number(),
-      type: z.literal("scrape"),
-      result: z.union([
-        z.object({
-          url: z.string(),
-          html: z.string(),
+  actionResults: z
+    .union([
+      z.object({
+        idx: z.number(),
+        type: z.literal("screenshot"),
+        result: z.object({
+          path: z.string(),
         }),
-        z.object({
-          url: z.string(),
-          accessibility: z.string(),
+      }),
+      z.object({
+        idx: z.number(),
+        type: z.literal("scrape"),
+        result: z.union([
+          z.object({
+            url: z.string(),
+            html: z.string(),
+          }),
+          z.object({
+            url: z.string(),
+            accessibility: z.string(),
+          }),
+        ]),
+      }),
+      z.object({
+        idx: z.number(),
+        type: z.literal("executeJavascript"),
+        result: z.object({
+          return: z.string(),
         }),
-      ]),
-    }),
-    z.object({
-      idx: z.number(),
-      type: z.literal("executeJavascript"),
-      result: z.object({
-        return: z.string(),
       }),
-    }),
-    z.object({
-      idx: z.number(),
-      type: z.literal("pdf"),
-      result: z.object({
-        link: z.string(),
+      z.object({
+        idx: z.number(),
+        type: z.literal("pdf"),
+        result: z.object({
+          link: z.string(),
+        }),
       }),
-    }),
-  ]).array().optional(),
+    ])
+    .array()
+    .optional(),
 
   // chrome-cdp only -- file download handler
   file: z
@@ -96,6 +101,7 @@ const successSchema = z.object({
   docUrl: z.string().optional(),
 
   usedMobileProxy: z.boolean().optional(),
+  youtubeTranscriptContent: z.any().optional(),
 });
 
 export type FireEngineCheckStatusSuccess = z.infer<typeof successSchema>;
@@ -109,6 +115,7 @@ const processingSchema = z.object({
     "waiting-children",
     "unknown",
     "prioritized",
+    "pending",
   ]),
   processing: z.boolean(),
 });
@@ -132,36 +139,20 @@ export async function fireEngineCheckStatus(
   jobId: string,
   mock: MockState | null,
   abort?: AbortSignal,
+  production = true,
 ): Promise<FireEngineCheckStatusSuccess> {
-  let status = await Sentry.startSpan(
-    {
-      name: "fire-engine: Check status",
-      attributes: {
-        jobId,
-      },
-    },
-    async (span) => {
-      return await robustFetch({
-        url: `${fireEngineURL}/scrape/${jobId}`,
-        method: "GET",
-        logger: logger.child({ method: "fireEngineCheckStatus/robustFetch" }),
-        headers: {
-          ...(Sentry.isInitialized()
-            ? {
-                "sentry-trace": Sentry.spanToTraceHeader(span),
-                baggage: Sentry.spanToBaggageHeader(span),
-              }
-            : {}),
-        },
-        mock,
-        abort,
-      });
-    },
-  );
+  let status = await robustFetch({
+    url: `${production ? fireEngineURL : fireEngineStagingURL}/scrape/${jobId}`,
+    method: "GET",
+    logger: logger.child({ method: "fireEngineCheckStatus/robustFetch" }),
+    headers: {},
+    mock,
+    abort,
+  });
 
   // Fire-engine now saves the content to GCS
   if (!status.content && status.docUrl) {
-    const doc = await getDocFromGCS(status.docUrl.split('/').pop() ?? "");
+    const doc = await getDocFromGCS(status.docUrl.split("/").pop() ?? "");
     if (doc) {
       status = { ...status, ...doc };
       delete status.docUrl;
@@ -185,16 +176,27 @@ export async function fireEngineCheckStatus(
     ) {
       const code = status.error.split("Chrome error: ")[1];
 
-      if (code.includes("ERR_CERT_") || code.includes("ERR_SSL_") || code.includes("ERR_BAD_SSL_")) {
+      if (
+        code.includes("ERR_CERT_") ||
+        code.includes("ERR_SSL_") ||
+        code.includes("ERR_BAD_SSL_")
+      ) {
         throw new SSLError(meta.options.skipTlsVerification);
       } else {
         throw new SiteError(code);
       }
     } else if (
       typeof status.error === "string" &&
+      status.error.includes("proxies available for")
+    ) {
+      throw new ProxySelectionError();
+    } else if (
+      typeof status.error === "string" &&
       status.error.includes("Dns resolution error for hostname: ")
     ) {
-      throw new DNSResolutionError(status.error.split("Dns resolution error for hostname: ")[1]);
+      throw new DNSResolutionError(
+        status.error.split("Dns resolution error for hostname: ")[1],
+      );
     } else if (
       typeof status.error === "string" &&
       status.error.includes("File size exceeds")
@@ -204,10 +206,20 @@ export async function fireEngineCheckStatus(
       );
     } else if (
       typeof status.error === "string" &&
-      // TODO: improve this later
-      (status.error.includes("Element") || status.error.includes("Javascript execution failed"))
+      status.error.includes("failed to finish without timing out")
     ) {
-      throw new ActionError(status.error.split("Error: ")[1]);
+      logger.warn("CDP timed out while loading the page", { status, jobId });
+      throw new FEPageLoadFailed();
+    } else if (
+      typeof status.error === "string" &&
+      // TODO: improve this later
+      (status.error.includes("Element") ||
+        status.error.includes("Javascript execution failed"))
+    ) {
+      const errorMessage = status.error.startsWith("Error: ")
+        ? status.error.substring(7)
+        : status.error;
+      throw new ActionError(errorMessage);
     } else {
       throw new EngineError("Scrape job failed", {
         cause: {

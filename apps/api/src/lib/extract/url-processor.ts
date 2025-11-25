@@ -9,9 +9,13 @@ import type { Logger } from "winston";
 import { generateText } from "ai";
 import { getModel } from "../generic-ai";
 import { calculateCost } from "../../scraper/scrapeURL/transformers/llmExtract";
-import type { CostTracking } from "./extraction-service";
+import type { CostTracking } from "../cost-tracking";
 
-export async function generateBasicCompletion(prompt: string, costTracking: CostTracking): Promise<{ text: string } | null> {
+export async function generateBasicCompletion(
+  prompt: string,
+  costTracking: CostTracking,
+  metadata: { teamId: string; extractId?: string },
+): Promise<{ text: string } | null> {
   try {
     const result = await generateText({
       model: getModel("gpt-4o", "openai"),
@@ -20,7 +24,27 @@ export async function generateBasicCompletion(prompt: string, costTracking: Cost
         anthropic: {
           thinking: { type: "enabled", budgetTokens: 12000 },
         },
-      }
+        google: {
+          labels: {
+            functionId: "generateBasicCompletion",
+            teamId: metadata.teamId,
+            extractId: metadata.extractId ?? "unspecified",
+          },
+        },
+      },
+      experimental_telemetry: {
+        isEnabled: true,
+        functionId: "generateBasicCompletion",
+        metadata: {
+          ...(metadata.extractId
+            ? {
+                langfuseTraceId: "extract:" + metadata.extractId,
+                extractId: metadata.extractId,
+              }
+            : {}),
+          teamId: metadata.teamId,
+        },
+      },
     });
     costTracking.addCall({
       type: "other",
@@ -29,7 +53,11 @@ export async function generateBasicCompletion(prompt: string, costTracking: Cost
         method: "generateBasicCompletion",
       },
       model: "openai/gpt-4o",
-      cost: calculateCost("openai/gpt-4o", result.usage?.promptTokens ?? 0, result.usage?.completionTokens ?? 0),
+      cost: calculateCost(
+        "openai/gpt-4o",
+        result.usage?.promptTokens ?? 0,
+        result.usage?.completionTokens ?? 0,
+      ),
       tokens: {
         input: result.usage?.promptTokens ?? 0,
         output: result.usage?.completionTokens ?? 0,
@@ -41,13 +69,31 @@ export async function generateBasicCompletion(prompt: string, costTracking: Cost
     if (error?.type == "rate_limit_error") {
       try {
         const result = await generateText({
-          model: getModel("gpt-4o-mini", "openai"), 
+          model: getModel("gpt-4o-mini", "openai"),
           prompt: prompt,
           providerOptions: {
             anthropic: {
               thinking: { type: "enabled", budgetTokens: 12000 },
             },
-          }
+            google: {
+              labels: {
+                teamId: metadata.teamId,
+                extractId: metadata.extractId ?? "unspecified",
+              },
+            },
+          },
+          experimental_telemetry: {
+            isEnabled: true,
+            metadata: {
+              ...(metadata.extractId
+                ? {
+                    langfuseTraceId: "extract:" + metadata.extractId,
+                    extractId: metadata.extractId,
+                  }
+                : {}),
+              teamId: metadata.teamId,
+            },
+          },
         });
         costTracking.addCall({
           type: "other",
@@ -56,7 +102,11 @@ export async function generateBasicCompletion(prompt: string, costTracking: Cost
             method: "generateBasicCompletion",
           },
           model: "openai/gpt-4o-mini",
-          cost: calculateCost("openai/gpt-4o-mini", result.usage?.promptTokens ?? 0, result.usage?.completionTokens ?? 0),
+          cost: calculateCost(
+            "openai/gpt-4o-mini",
+            result.usage?.promptTokens ?? 0,
+            result.usage?.completionTokens ?? 0,
+          ),
           tokens: {
             input: result.usage?.promptTokens ?? 0,
             output: result.usage?.completionTokens ?? 0,
@@ -64,7 +114,10 @@ export async function generateBasicCompletion(prompt: string, costTracking: Cost
         });
         return { text: result.text };
       } catch (fallbackError) {
-        console.error("Error generating basic completion with fallback model:", fallbackError);
+        console.error(
+          "Error generating basic completion with fallback model:",
+          fallbackError,
+        );
         return null;
       }
     }
@@ -85,6 +138,7 @@ interface ProcessUrlOptions {
   reasoning: string;
   multiEntityKeys: string[];
   keyIndicators: string[];
+  extractId?: string;
 }
 
 export async function processUrl(
@@ -124,10 +178,12 @@ export async function processUrl(
     const res = await generateBasicCompletion(
       buildRefrasedPrompt(options.prompt, baseUrl),
       costTracking,
+      { teamId: options.teamId, extractId: options.extractId },
     );
 
     if (res) {
-      searchQuery = res.text.replace('"', "").replace("/", "") ?? options.prompt;
+      searchQuery =
+        res.text.replace('"', "").replace("/", "") ?? options.prompt;
     }
   }
 
@@ -149,7 +205,7 @@ export async function processUrl(
     });
 
     let mappedLinks = mapResults.mapResults as MapDocument[];
-    let allUrls = [...mappedLinks.map((m) => m.url), ...mapResults.links];
+    let allUrls = [...mappedLinks.map(m => m.url), ...mapResults.links];
     let uniqueUrls = removeDuplicateUrls(allUrls);
     logger.debug("Map finished.", {
       linkCount: allUrls.length,
@@ -158,8 +214,8 @@ export async function processUrl(
     options.log["uniqueUrlsLength-1"] = uniqueUrls.length;
 
     // Track all discovered URLs
-    uniqueUrls.forEach((discoveredUrl) => {
-      if (!urlTraces.some((t) => t.url === discoveredUrl)) {
+    uniqueUrls.forEach(discoveredUrl => {
+      if (!urlTraces.some(t => t.url === discoveredUrl)) {
         urlTraces.push({
           url: discoveredUrl,
           status: "mapped",
@@ -187,7 +243,7 @@ export async function processUrl(
       });
 
       mappedLinks = retryMapResults.mapResults as MapDocument[];
-      allUrls = [...mappedLinks.map((m) => m.url), ...mapResults.links];
+      allUrls = [...mappedLinks.map(m => m.url), ...mapResults.links];
       uniqueUrls = removeDuplicateUrls(allUrls);
       logger.debug("Map finished. (pass 2)", {
         linkCount: allUrls.length,
@@ -195,8 +251,8 @@ export async function processUrl(
       });
 
       // Track all discovered URLs
-      uniqueUrls.forEach((discoveredUrl) => {
-        if (!urlTraces.some((t) => t.url === discoveredUrl)) {
+      uniqueUrls.forEach(discoveredUrl => {
+        if (!urlTraces.some(t => t.url === discoveredUrl)) {
           urlTraces.push({
             url: discoveredUrl,
             status: "mapped",
@@ -213,8 +269,8 @@ export async function processUrl(
     options.log["uniqueUrlsLength-2"] = uniqueUrls.length;
 
     // Track all discovered URLs
-    uniqueUrls.forEach((discoveredUrl) => {
-      if (!urlTraces.some((t) => t.url === discoveredUrl)) {
+    uniqueUrls.forEach(discoveredUrl => {
+      if (!urlTraces.some(t => t.url === discoveredUrl)) {
         urlTraces.push({
           url: discoveredUrl,
           status: "mapped",
@@ -226,12 +282,12 @@ export async function processUrl(
       }
     });
 
-    const existingUrls = new Set(mappedLinks.map((m) => m.url));
-    const newUrls = uniqueUrls.filter((url) => !existingUrls.has(url));
+    const existingUrls = new Set(mappedLinks.map(m => m.url));
+    const newUrls = uniqueUrls.filter(url => !existingUrls.has(url));
 
     mappedLinks = [
       ...mappedLinks,
-      ...newUrls.map((url) => ({ url, title: "", description: "" })),
+      ...newUrls.map(url => ({ url, title: "", description: "" })),
     ];
 
     if (mappedLinks.length === 0) {
@@ -244,13 +300,14 @@ export async function processUrl(
       extractConfig.RERANKING.MAX_INITIAL_RANKING_LIMIT,
     );
 
-    updateExtractCallback(mappedLinks.map((x) => x.url));
+    updateExtractCallback(mappedLinks.map(x => x.url));
 
     let rephrasedPrompt = options.prompt ?? searchQuery;
     try {
       const res = await generateBasicCompletion(
         buildPreRerankPrompt(rephrasedPrompt, options.schema, baseUrl),
         costTracking,
+        { teamId: options.teamId, extractId: options.extractId },
       );
 
       if (res) {
@@ -288,6 +345,11 @@ export async function processUrl(
       multiEntityKeys: options.multiEntityKeys,
       keyIndicators: options.keyIndicators,
       costTracking,
+      metadata: {
+        teamId: options.teamId,
+        functionId: "processUrl/pass1",
+        extractId: options.extractId,
+      },
     });
     mappedLinks = rerankerResult.mapDocument;
     let tokensUsed = rerankerResult.tokensUsed;
@@ -307,6 +369,11 @@ export async function processUrl(
         multiEntityKeys: options.multiEntityKeys,
         keyIndicators: options.keyIndicators,
         costTracking,
+        metadata: {
+          teamId: options.teamId,
+          functionId: "processUrl/pass2",
+          extractId: options.extractId,
+        },
       });
       mappedLinks = rerankerResult.mapDocument;
       tokensUsed += rerankerResult.tokensUsed;
@@ -322,8 +389,8 @@ export async function processUrl(
     //   (link, index) => `${index + 1}. URL: ${link.url}, Title: ${link.title}, Description: ${link.description}`
     // );
     // Remove title and description from mappedLinks
-    mappedLinks = mappedLinks.map((link) => ({ url: link.url }));
-    return mappedLinks.map((x) => x.url);
+    mappedLinks = mappedLinks.map(link => ({ url: link.url }));
+    return mappedLinks.map(x => x.url);
   } catch (error) {
     trace.status = "error";
     trace.error = error.message;

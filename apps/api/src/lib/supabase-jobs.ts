@@ -26,6 +26,24 @@ export const supabaseGetJobById = async (jobId: string) => {
   return data;
 };
 
+export const supabaseGetJobByIdDirect = async (jobId: string) => {
+  const { data, error } = await supabase_service
+    .from("firecrawl_jobs")
+    .select("*")
+    .eq("job_id", jobId)
+    .single();
+
+  if (error) {
+    return null;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return data;
+};
+
 /**
  * Get multiple firecrawl_jobs by ID. Use this if you're not requesting a lot (50+) of jobs at once.
  * @param jobIds IDs of Jobs
@@ -74,7 +92,10 @@ export const supabaseGetJobsByCrawlId = async (crawlId: string) => {
   return data;
 };
 
-export const supabaseGetJobByIdOnlyData = async (jobId: string, logger?: Logger) => {
+export const supabaseGetJobByIdOnlyData = async (
+  jobId: string,
+  logger?: Logger,
+) => {
   const { data, error } = await supabase_rr_service
     .from("firecrawl_jobs")
     .select("team_id")

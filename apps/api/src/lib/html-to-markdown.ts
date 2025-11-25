@@ -1,34 +1,36 @@
 import koffi from "koffi";
-import { join } from "path";
 import "../services/sentry";
 import * as Sentry from "@sentry/node";
 
 import dotenv from "dotenv";
 import { logger } from "./logger";
 import { stat } from "fs/promises";
+import { HTML_TO_MARKDOWN_PATH } from "../natives";
+import { convertHTMLToMarkdownWithHttpService } from "./html-to-markdown-client";
+import { postProcessMarkdown } from "@mendable/firecrawl-rs";
 dotenv.config();
 
 // TODO: add a timeout to the Go parser
-const goExecutablePath = join(
-  process.cwd(),
-  "sharedLibs",
-  "go-html-to-md",
-  "html-to-markdown.so",
-);
 
 class GoMarkdownConverter {
   private static instance: GoMarkdownConverter;
   private convert: any;
+  private free: any;
 
   private constructor() {
-    const lib = koffi.load(goExecutablePath);
-    this.convert = lib.func("ConvertHTMLToMarkdown", "string", ["string"]);
+    const lib = koffi.load(HTML_TO_MARKDOWN_PATH);
+    this.free = lib.func("FreeCString", "void", ["string"]);
+    const cstn = "CString:" + crypto.randomUUID();
+    const freedResultString = koffi.disposable(cstn, "string", this.free);
+    this.convert = lib.func("ConvertHTMLToMarkdown", freedResultString, [
+      "string",
+    ]);
   }
 
   public static async getInstance(): Promise<GoMarkdownConverter> {
     if (!GoMarkdownConverter.instance) {
       try {
-        await stat(goExecutablePath);
+        await stat(HTML_TO_MARKDOWN_PATH);
       } catch (_) {
         throw Error("Go shared library not found");
       }
@@ -57,13 +59,30 @@ export async function parseMarkdown(
     return "";
   }
 
+  // Try HTTP service first if enabled
+  if (process.env.HTML_TO_MARKDOWN_SERVICE_URL) {
+    try {
+      let markdownContent = await convertHTMLToMarkdownWithHttpService(html);
+      markdownContent = await postProcessMarkdown(markdownContent);
+      return markdownContent;
+    } catch (error) {
+      logger.error(
+        "Error converting HTML to Markdown with HTTP service, falling back to original parser",
+        { error },
+      );
+      Sentry.captureException(error, {
+        tags: {
+          fallback: "original_parser",
+        },
+      });
+    }
+  }
+
   try {
     if (process.env.USE_GO_MARKDOWN_PARSER == "true") {
       const converter = await GoMarkdownConverter.getInstance();
       let markdownContent = await converter.convertHTMLToMarkdown(html);
-
-      markdownContent = processMultiLineLinks(markdownContent);
-      markdownContent = removeSkipToContentLinks(markdownContent);
+      markdownContent = await postProcessMarkdown(markdownContent);
       // logger.info(`HTML to Markdown conversion using Go parser successful`);
       return markdownContent;
     }
@@ -79,7 +98,7 @@ export async function parseMarkdown(
     } else {
       logger.warn(
         "Tried to use Go parser, but it doesn't exist in the file system.",
-        { goExecutablePath },
+        { HTML_TO_MARKDOWN_PATH },
       );
     }
   }
@@ -108,8 +127,7 @@ export async function parseMarkdown(
 
   try {
     let markdownContent = await turndownService.turndown(html);
-    markdownContent = processMultiLineLinks(markdownContent);
-    markdownContent = removeSkipToContentLinks(markdownContent);
+    markdownContent = await postProcessMarkdown(markdownContent);
 
     return markdownContent;
   } catch (error) {

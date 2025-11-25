@@ -2,12 +2,11 @@ import { encoding_for_model } from "@dqbd/tiktoken";
 import { TiktokenModel } from "@dqbd/tiktoken";
 import {
   Document,
-  ExtractOptions,
-  isAgentExtractModelValid,
+  JsonFormatWithOptions,
   TokenUsage,
-} from "../../../controllers/v1/types";
+} from "../../../controllers/v2/types";
 import { Logger } from "winston";
-import { EngineResultsTracker, Meta } from "..";
+import { Meta } from "..";
 import { logger } from "../../../lib/logger";
 import { modelPrices } from "../../../lib/extract/usage/model-prices";
 import {
@@ -16,14 +15,56 @@ import {
   generateText,
   LanguageModel,
   NoObjectGeneratedError,
+  jsonSchema,
 } from "ai";
-import { jsonSchema } from "ai";
 import { getModel } from "../../../lib/generic-ai";
 import { z } from "zod";
 import fs from "fs/promises";
 import Ajv from "ajv";
 import { extractData } from "../lib/extractSmartScrape";
-import { CostTracking } from "../../../lib/extract/extraction-service";
+import { CostTracking } from "../../../lib/cost-tracking";
+import { isAgentExtractModelValid } from "../../../controllers/v1/types";
+import { hasFormatOfType } from "../../../lib/format-utils";
+
+// Smart model selection based on schema
+function detectRecursiveSchema(schema: any): boolean {
+  if (!schema || typeof schema !== "object") return false;
+
+  const schemaString = JSON.stringify(schema);
+  const hasRefs =
+    schemaString.includes('"$ref"') ||
+    schemaString.includes("#/$defs/") ||
+    schemaString.includes("#/definitions/");
+  const hasDefs = !!(schema.$defs || schema.definitions);
+
+  return hasRefs || hasDefs;
+}
+
+function selectModelForSchema(schema?: any): {
+  modelName: string;
+  reason: string;
+} {
+  if (!schema) {
+    return { modelName: "gpt-4o-mini", reason: "no_schema" };
+  }
+
+  const isRecursive = detectRecursiveSchema(schema);
+
+  if (isRecursive) {
+    logger.info(`Model: gpt-4o | hasRef: true`);
+    return {
+      modelName: "gpt-4o",
+      reason: "recursive_schema_detected",
+    };
+  }
+
+  logger.info(`Model: gpt-4o-mini | hasRef: false`);
+  return {
+    modelName: "gpt-4o-mini",
+    reason: "simple_schema",
+  };
+}
+
 // TODO: fix this, it's horrible
 type LanguageModelV1ProviderMetadata = {
   anthropic?: {
@@ -55,7 +96,6 @@ const getModelLimits = (model: string) => {
 
 export class LLMRefusalError extends Error {
   public refusal: string;
-  public results: EngineResultsTracker | undefined;
 
   constructor(refusal: string) {
     super("LLM refused to extract the website's content");
@@ -76,15 +116,15 @@ function normalizeSchema(x: any): any {
   }
 
   if (x && x.anyOf) {
-    x.anyOf = x.anyOf.map((x) => normalizeSchema(x));
+    x.anyOf = x.anyOf.map(x => normalizeSchema(x));
   }
 
   if (x && x.oneOf) {
-    x.oneOf = x.oneOf.map((x) => normalizeSchema(x));
+    x.oneOf = x.oneOf.map(x => normalizeSchema(x));
   }
 
   if (x && x.allOf) {
-    x.allOf = x.allOf.map((x) => normalizeSchema(x));
+    x.allOf = x.allOf.map(x => normalizeSchema(x));
   }
 
   if (x && x.not) {
@@ -190,18 +230,24 @@ export function calculateCost(
     "gpt-4o-mini": { input_cost: 0.15, output_cost: 0.6 },
     "openai/gpt-4o-mini": { input_cost: 0.15, output_cost: 0.6 },
     "openai/gpt-4o": { input_cost: 2.5, output_cost: 10 },
+    "gpt-5": { input_cost: 1.25, output_cost: 10 },
+    "openai/gpt-5": { input_cost: 1.25, output_cost: 10 },
+    "gpt-5-mini": { input_cost: 0.25, output_cost: 2 },
+    "openai/gpt-5-mini": { input_cost: 0.25, output_cost: 2 },
+    "gpt-5-nano": { input_cost: 0.05, output_cost: 0.4 },
+    "openai/gpt-5-nano": { input_cost: 0.05, output_cost: 0.4 },
     "google/gemini-2.0-flash-001": { input_cost: 0.15, output_cost: 0.6 },
+    "gemini-2.0-flash": { input_cost: 0.15, output_cost: 0.6 },
     "deepseek/deepseek-r1": { input_cost: 0.55, output_cost: 2.19 },
     "google/gemini-2.0-flash-thinking-exp:free": {
       input_cost: 0.55,
       output_cost: 2.19,
     },
+    "google/gemini-2.5-flash-lite": { input_cost: 0.1, output_cost: 0.4 },
   };
   let modelCost = modelCosts[model] || { input_cost: 0, output_cost: 0 };
   //gemini-2.5-pro-exp-03-25 pricing
-  if (
-    model.includes("gemini-2.5-pro")
-  ) {
+  if (model.includes("gemini-2.5-pro")) {
     let inputCost = 0;
     let outputCost = 0;
     if (inputTokens <= 200000) {
@@ -224,7 +270,10 @@ export function calculateCost(
 export type GenerateCompletionsOptions = {
   model?: LanguageModel;
   logger: Logger;
-  options: ExtractOptions;
+  options: Omit<JsonFormatWithOptions, "type"> & {
+    systemPrompt?: string;
+    temperature?: number;
+  };
   markdown?: string;
   previousWarning?: string;
   isExtractEndpoint?: boolean;
@@ -234,6 +283,14 @@ export type GenerateCompletionsOptions = {
   costTrackingOptions: {
     costTracking: CostTracking;
     metadata: Record<string, any>;
+  };
+  metadata: {
+    teamId: string;
+    functionId?: string;
+    extractId?: string;
+    scrapeId?: string;
+    deepResearchId?: string;
+    llmsTxtId?: string;
   };
 };
 export async function generateCompletions({
@@ -247,6 +304,7 @@ export async function generateCompletions({
   providerOptions,
   retryModel = getModel("claude-3-5-sonnet-20240620", "anthropic"),
   costTrackingOptions,
+  metadata,
 }: GenerateCompletionsOptions): Promise<{
   extract: any;
   numTokens: number;
@@ -279,6 +337,49 @@ export async function generateCompletions({
             anthropic: {
               thinking: { type: "enabled", budgetTokens: 12000 },
             },
+            google: {
+              labels: {
+                teamId: metadata.teamId,
+                functionId: metadata.functionId ?? "unspecified",
+                extractId: metadata.extractId ?? "unspecified",
+                scrapeId: metadata.scrapeId ?? "unspecified",
+                deepResearchId: metadata.deepResearchId ?? "unspecified",
+                llmsTxtId: metadata.llmsTxtId ?? "unspecified",
+              },
+            },
+          },
+          experimental_telemetry: {
+            isEnabled: true,
+            functionId: metadata.functionId
+              ? metadata.functionId + "/generateText"
+              : "generateText",
+            metadata: {
+              teamId: metadata.teamId,
+              ...(metadata.extractId
+                ? {
+                    langfuseTraceId: "extract:" + metadata.extractId,
+                    extractId: metadata.extractId,
+                  }
+                : {}),
+              ...(metadata.scrapeId
+                ? {
+                    langfuseTraceId: "scrape:" + metadata.scrapeId,
+                    scrapeId: metadata.scrapeId,
+                  }
+                : {}),
+              ...(metadata.deepResearchId
+                ? {
+                    langfuseTraceId: "deepResearch:" + metadata.deepResearchId,
+                    deepResearchId: metadata.deepResearchId,
+                  }
+                : {}),
+              ...(metadata.llmsTxtId
+                ? {
+                    langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
+                    llmsTxtId: metadata.llmsTxtId,
+                  }
+                : {}),
+            },
           },
         });
 
@@ -297,7 +398,7 @@ export async function generateCompletions({
           tokens: {
             input: result.usage?.promptTokens ?? 0,
             output: result.usage?.completionTokens ?? 0,
-          }
+          },
         });
 
         extract = result.text;
@@ -309,7 +410,9 @@ export async function generateCompletions({
           totalUsage: {
             promptTokens: result.usage?.promptTokens ?? 0,
             completionTokens: result.usage?.completionTokens ?? 0,
-            totalTokens: result.usage?.promptTokens ?? 0 + (result.usage?.completionTokens ?? 0),
+            totalTokens:
+              result.usage?.promptTokens ??
+              0 + (result.usage?.completionTokens ?? 0),
           },
           model: currentModel.modelId,
         };
@@ -333,6 +436,50 @@ export async function generateCompletions({
                 anthropic: {
                   thinking: { type: "enabled", budgetTokens: 12000 },
                 },
+                google: {
+                  labels: {
+                    teamId: metadata.teamId,
+                    functionId: metadata.functionId ?? "unspecified",
+                    extractId: metadata.extractId ?? "unspecified",
+                    scrapeId: metadata.scrapeId ?? "unspecified",
+                    deepResearchId: metadata.deepResearchId ?? "unspecified",
+                    llmsTxtId: metadata.llmsTxtId ?? "unspecified",
+                  },
+                },
+              },
+              experimental_telemetry: {
+                isEnabled: true,
+                functionId: metadata.functionId
+                  ? metadata.functionId + "/generateText"
+                  : "generateText",
+                metadata: {
+                  teamId: metadata.teamId,
+                  ...(metadata.extractId
+                    ? {
+                        langfuseTraceId: "extract:" + metadata.extractId,
+                        extractId: metadata.extractId,
+                      }
+                    : {}),
+                  ...(metadata.scrapeId
+                    ? {
+                        langfuseTraceId: "scrape:" + metadata.scrapeId,
+                        scrapeId: metadata.scrapeId,
+                      }
+                    : {}),
+                  ...(metadata.deepResearchId
+                    ? {
+                        langfuseTraceId:
+                          "deepResearch:" + metadata.deepResearchId,
+                        deepResearchId: metadata.deepResearchId,
+                      }
+                    : {}),
+                  ...(metadata.llmsTxtId
+                    ? {
+                        langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
+                        llmsTxtId: metadata.llmsTxtId,
+                      }
+                    : {}),
+                },
               },
             });
 
@@ -353,7 +500,7 @@ export async function generateCompletions({
               tokens: {
                 input: result.usage?.promptTokens ?? 0,
                 output: result.usage?.completionTokens ?? 0,
-              }
+              },
             });
 
             return {
@@ -363,7 +510,9 @@ export async function generateCompletions({
               totalUsage: {
                 promptTokens: result.usage?.promptTokens ?? 0,
                 completionTokens: result.usage?.completionTokens ?? 0,
-                totalTokens: result.usage?.promptTokens ?? 0 + (result.usage?.completionTokens ?? 0),
+                totalTokens:
+                  result.usage?.promptTokens ??
+                  0 + (result.usage?.completionTokens ?? 0),
               },
               model: currentModel.modelId,
             };
@@ -416,7 +565,11 @@ export async function generateCompletions({
     const repairConfig = {
       experimental_repairText: async ({ text, error }) => {
         // AI may output a markdown JSON code block. Remove it - mogery
-        logger.debug("Repairing text", { textType: typeof text, textPeek: JSON.stringify(text).slice(0, 100) + "...", error });
+        logger.debug("Repairing text", {
+          textType: typeof text,
+          textPeek: JSON.stringify(text).slice(0, 100) + "...",
+          error,
+        });
 
         if (typeof text === "string" && text.trim().startsWith("```")) {
           if (text.trim().startsWith("```json")) {
@@ -435,7 +588,9 @@ export async function generateCompletions({
             logger.debug("Repaired text with string manipulation");
             return text;
           } catch (e) {
-            logger.error("Even after repairing, failed to parse JSON", { error: e });
+            logger.error("Even after repairing, failed to parse JSON", {
+              error: e,
+            });
           }
         }
 
@@ -448,6 +603,50 @@ export async function generateCompletions({
             providerOptions: {
               anthropic: {
                 thinking: { type: "enabled", budgetTokens: 12000 },
+              },
+              google: {
+                labels: {
+                  teamId: metadata.teamId,
+                  functionId: metadata.functionId ?? "unspecified",
+                  extractId: metadata.extractId ?? "unspecified",
+                  scrapeId: metadata.scrapeId ?? "unspecified",
+                  deepResearchId: metadata.deepResearchId ?? "unspecified",
+                  llmsTxtId: metadata.llmsTxtId ?? "unspecified",
+                },
+              },
+            },
+            experimental_telemetry: {
+              isEnabled: true,
+              functionId: metadata.functionId
+                ? metadata.functionId + "/repairText"
+                : "repairText",
+              metadata: {
+                teamId: metadata.teamId,
+                ...(metadata.extractId
+                  ? {
+                      langfuseTraceId: "extract:" + metadata.extractId,
+                      extractId: metadata.extractId,
+                    }
+                  : {}),
+                ...(metadata.scrapeId
+                  ? {
+                      langfuseTraceId: "scrape:" + metadata.scrapeId,
+                      scrapeId: metadata.scrapeId,
+                    }
+                  : {}),
+                ...(metadata.deepResearchId
+                  ? {
+                      langfuseTraceId:
+                        "deepResearch:" + metadata.deepResearchId,
+                      deepResearchId: metadata.deepResearchId,
+                    }
+                  : {}),
+                ...(metadata.llmsTxtId
+                  ? {
+                      langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
+                      llmsTxtId: metadata.llmsTxtId,
+                    }
+                  : {}),
               },
             },
           });
@@ -482,7 +681,21 @@ export async function generateCompletions({
     const generateObjectConfig = {
       model: currentModel,
       prompt: prompt,
-      providerOptions: providerOptions || undefined,
+      providerOptions: {
+        ...(providerOptions || {}),
+        google: {
+          ...((providerOptions as any)?.vertex || {}),
+          labels: {
+            ...((providerOptions as any)?.vertex?.labels || {}),
+            teamId: metadata.teamId,
+            functionId: metadata.functionId ?? "unspecified",
+            extractId: metadata.extractId ?? "unspecified",
+            scrapeId: metadata.scrapeId ?? "unspecified",
+            deepResearchId: metadata.deepResearchId ?? "unspecified",
+            llmsTxtId: metadata.llmsTxtId ?? "unspecified",
+          },
+        },
+      },
       system: options.systemPrompt,
       ...(schema && {
         schema: schema instanceof z.ZodType ? schema : jsonSchema(schema),
@@ -492,9 +705,45 @@ export async function generateCompletions({
       ...(!schema && {
         onError: (error: Error) => {
           lastError = error;
-          console.error(error);
+          logger.error("LLM extraction failed without schema", { error });
         },
       }),
+      experimental_telemetry: {
+        isEnabled: true,
+        functionId: metadata.functionId,
+        metadata: {
+          teamId: metadata.teamId,
+          ...(metadata.extractId
+            ? {
+                langfuseTraceId: "extract:" + metadata.extractId,
+                extractId: metadata.extractId,
+              }
+            : {}),
+          ...(metadata.scrapeId
+            ? {
+                langfuseTraceId: "scrape:" + metadata.scrapeId,
+                scrapeId: metadata.scrapeId,
+              }
+            : {}),
+          ...(metadata.deepResearchId
+            ? {
+                langfuseTraceId: "deepResearch:" + metadata.deepResearchId,
+                deepResearchId: metadata.deepResearchId,
+              }
+            : {}),
+          ...(metadata.llmsTxtId
+            ? {
+                langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
+                llmsTxtId: metadata.llmsTxtId,
+              }
+            : {}),
+        },
+      },
+      ...(currentModel.modelId.startsWith("gpt-5")
+        ? {
+            temperature: 1,
+          }
+        : {}),
     } satisfies Parameters<typeof generateObject>[0];
 
     // const now = new Date().getTime();
@@ -503,11 +752,15 @@ export async function generateCompletions({
     //   JSON.stringify(generateObjectConfig, null, 2),
     // );
 
-    logger.debug("Generating object...", { generateObjectConfig: {
-      ...generateObjectConfig,
-      prompt: generateObjectConfig.prompt.slice(0, 100) + "...",
-      system: generateObjectConfig.system?.slice(0, 100) + "...",
-    }, model, retryModel });
+    logger.debug("Generating object...", {
+      generateObjectConfig: {
+        ...generateObjectConfig,
+        prompt: generateObjectConfig.prompt.slice(0, 100) + "...",
+        system: generateObjectConfig.system?.slice(0, 100) + "...",
+      },
+      model,
+      retryModel,
+    });
 
     let result: { object: any; usage: TokenUsage } | undefined;
     try {
@@ -574,7 +827,7 @@ export async function generateCompletions({
           throw lastError;
         }
       } else if (NoObjectGeneratedError.isInstance(error)) {
-        console.log("No object generated", error);
+        logger.warn("No object generated", { error });
         if (
           error.text &&
           error.text.startsWith("```json") &&
@@ -652,25 +905,41 @@ export async function performLLMExtract(
   meta: Meta,
   document: Document,
 ): Promise<Document> {
-  if (meta.options.formats.includes("extract")) {
+  const jsonFormat = hasFormatOfType(meta.options.formats, "json");
+
+  // Debug logging for v1 format investigation
+  if (meta.internalOptions.v1OriginalFormat) {
+    meta.logger.debug("performLLMExtract v1 format debug", {
+      v1OriginalFormat: meta.internalOptions.v1OriginalFormat,
+      hasJsonFormat: !!jsonFormat,
+      formats: meta.options.formats.map(f =>
+        typeof f === "object" ? f.type : f,
+      ),
+    });
+  }
+
+  if (jsonFormat) {
+    if (meta.internalOptions.zeroDataRetention) {
+      document.warning =
+        "JSON mode is not supported with zero data retention." +
+        (document.warning ? " " + document.warning : "");
+      return document;
+    }
+
     // const originalOptions = meta.options.extract!;
 
     // let generationOptions = { ...originalOptions }; // Start with original options
+
+    const modelSelection = selectModelForSchema(jsonFormat.schema);
 
     const generationOptions: GenerateCompletionsOptions = {
       logger: meta.logger.child({
         method: "performLLMExtract/generateCompletions",
       }),
-      options: meta.options.extract!,
+      options: jsonFormat,
       markdown: document.markdown,
       previousWarning: document.warning,
-      // ... existing model and provider options ...
-      // model: getModel("o3-mini", "openai"), // Keeping existing model selection
-      // model: getModel("o3-mini", "openai"),
-      // model: getModel("qwen-qwq-32b", "groq"),
-      // model: getModel("gemini-2.0-flash", "google"),
-      // model: getModel("gemini-2.5-pro-preview-03-25", "vertex"),
-      model: getModel("gpt-4o-mini", "openai"),
+      model: getModel(modelSelection.modelName, "openai"),
       retryModel: getModel("gpt-4o", "openai"),
       costTrackingOptions: {
         costTracking: meta.costTracking,
@@ -679,18 +948,30 @@ export async function performLLMExtract(
           method: "performLLMExtract",
         },
       },
+      metadata: {
+        teamId: meta.internalOptions.teamId,
+        functionId: "performLLMExtract",
+        scrapeId: meta.id,
+      },
     };
 
     const { extractedDataArray, warning, costLimitExceededTokenUsage } =
       await extractData({
         extractOptions: generationOptions,
         urls: [meta.rewrittenUrl ?? meta.url],
-        useAgent: false,
+        useAgent: isAgentExtractModelValid(
+          meta.internalOptions.v1JSONAgent?.model,
+        ),
         scrapeId: meta.id,
+        metadata: {
+          teamId: meta.internalOptions.teamId,
+          functionId: "performLLMExtract",
+        },
       });
 
     if (warning) {
-      document.warning = warning + (document.warning ? " " + document.warning : "");
+      document.warning =
+        warning + (document.warning ? " " + document.warning : "");
     }
 
     // IMPORTANT: here it only get's the last page!!!
@@ -769,12 +1050,132 @@ export async function performLLMExtract(
     // }
 
     // Assign the final extracted data
-    if (meta.options.formats.includes("json")) {
+    // For v1 API backward compatibility, check the original format
+    meta.logger.debug("Assigning extracted data", {
+      v1OriginalFormat: meta.internalOptions.v1OriginalFormat,
+      hasExtractedData: !!extractedData,
+      assigningTo:
+        meta.internalOptions.v1OriginalFormat === "extract"
+          ? "extract"
+          : meta.internalOptions.v1OriginalFormat === "json"
+            ? "json"
+            : "json (default)",
+    });
+
+    if (meta.internalOptions.v1OriginalFormat === "extract") {
+      document.extract = extractedData;
+    } else if (meta.internalOptions.v1OriginalFormat === "json") {
       document.json = extractedData;
     } else {
-      document.extract = extractedData;
+      // v2 API or no v1OriginalFormat - use json field
+      document.json = extractedData;
     }
     // document.warning = warning;
+  }
+
+  return document;
+}
+
+export async function performSummary(
+  meta: Meta,
+  document: Document,
+): Promise<Document> {
+  if (hasFormatOfType(meta.options.formats, "summary")) {
+    if (meta.internalOptions.zeroDataRetention) {
+      document.warning =
+        "Summary mode is not supported with zero data retention." +
+        (document.warning ? " " + document.warning : "");
+      return document;
+    }
+
+    if (document.markdown === undefined) {
+      document.warning =
+        "Summary mode is not supported without the markdown format." +
+        (document.warning ? " " + document.warning : "");
+      return document;
+    }
+
+    const trimOutput = trimToTokenLimit(
+      document.markdown!,
+      120000,
+      "gpt-4o-mini",
+      document.warning,
+    );
+
+    document.warning = trimOutput.warning;
+
+    if (!trimOutput.text || trimOutput.text.trim() === "") {
+      document.warning =
+        "Summary generation was skipped because the markdown content is empty." +
+        (document.warning ? " " + document.warning : "");
+      return document;
+    }
+
+    const generationOptions: GenerateCompletionsOptions = {
+      logger: meta.logger.child({
+        method: "performSummary/generateCompletions",
+      }),
+      options: {
+        systemPrompt:
+          "You are a content summarization expert. Analyze the provided content and create a concise, informative summary that captures the key points, main ideas, and essential information. Focus on clarity and brevity while maintaining accuracy.",
+        prompt: "Summarize the main content and key points from this page.",
+        schema: {
+          type: "object",
+          properties: {
+            summary: {
+              type: "string",
+            },
+          },
+          required: ["summary"],
+        },
+      },
+      markdown: trimOutput.text,
+      previousWarning: document.warning,
+      model: (() => {
+        const inlineSchema = {
+          type: "object",
+          properties: { summary: { type: "string" } },
+          required: ["summary"],
+        };
+        const selection = selectModelForSchema(inlineSchema);
+        return getModel(selection.modelName, "openai");
+      })(),
+      retryModel: getModel("gpt-4o", "openai"),
+      costTrackingOptions: {
+        costTracking: meta.costTracking,
+        metadata: {
+          module: "scrapeURL",
+          method: "performSummary",
+        },
+      },
+      metadata: {
+        teamId: meta.internalOptions.teamId,
+        functionId: "performSummary",
+        scrapeId: meta.id,
+      },
+      providerOptions: {
+        openai: {
+          reasoning: { effort: "minimal" },
+        },
+      } as any,
+    };
+
+    const { extract, warning, totalUsage, model } =
+      await generateCompletions(generationOptions);
+
+    if (warning) {
+      document.warning =
+        warning + (document.warning ? " " + document.warning : "");
+    }
+
+    meta.logger.info("LLM summary generation token usage", {
+      model: model,
+      promptTokens: totalUsage.promptTokens,
+      completionTokens: totalUsage.completionTokens,
+      totalTokens: totalUsage.totalTokens,
+    });
+
+    document.summary = extract.summary;
   }
 
   return document;
@@ -830,6 +1231,12 @@ export async function generateSchemaFromPrompt(
   prompt: string,
   logger: Logger,
   costTracking: CostTracking,
+  metadata: {
+    teamId: string;
+    functionId?: string;
+    extractId?: string;
+    scrapeId?: string;
+  },
 ): Promise<{ extract: any }> {
   const model = getModel("gpt-4o", "openai");
   const retryModel = getModel("gpt-4o-mini", "openai");
@@ -846,7 +1253,6 @@ export async function generateSchemaFromPrompt(
         retryModel,
         markdown: "",
         options: {
-          mode: "llm",
           systemPrompt: `You are a schema generator for a web scraping system. Generate a JSON schema based on the user's prompt.
 Consider:
 1. The type of data being requested
@@ -882,6 +1288,12 @@ Return a valid JSON schema object with properties that would capture the informa
             method: "generateSchemaFromPrompt",
           },
         },
+        metadata: {
+          ...metadata,
+          functionId: metadata.functionId
+            ? metadata.functionId + "/generateSchemaFromPrompt"
+            : "generateSchemaFromPrompt",
+        },
       });
 
       return { extract };
@@ -895,5 +1307,71 @@ Return a valid JSON schema object with properties that would capture the informa
   // If we get here, all attempts failed
   throw new Error(
     `Failed to generate schema after all attempts. Last error: ${lastError?.message}`,
+  );
+}
+
+export async function generateCrawlerOptionsFromPrompt(
+  prompt: string,
+  logger: Logger,
+  costTracking: CostTracking,
+  metadata: { teamId: string; crawlId?: string },
+): Promise<{ extract: any }> {
+  const model = getModel("gpt-4o", "openai");
+  const retryModel = getModel("gpt-4o-mini", "openai");
+  const temperatures = [0, 0.1, 0.3];
+  let lastError: Error | null = null;
+
+  for (const temp of temperatures) {
+    try {
+      const { extract } = await generateCompletions({
+        logger: logger.child({
+          method: "generateCrawlerOptionsFromPrompt/generateCompletions",
+        }),
+        model,
+        retryModel,
+        markdown: "",
+        options: {
+          systemPrompt: `You are a web crawler configuration expert. Generate crawler options based on natural language instructions.
+
+Available crawler options:
+- includePaths: string[] - URL pathname regex patterns that include matching URLs in the crawl. Only the paths that match the specified patterns will be included in the response. For example, if you set "includePaths": ["blog/.*"] for the base URL firecrawl.dev, only results matching that pattern will be included, such as https://www.firecrawl.dev/blog/firecrawl-launch-week-1-recap.
+- excludePaths: string[] - URL pathname regex patterns that exclude matching URLs from the crawl. For example, if you set "excludePaths": ["blog/.*"] for the base URL firecrawl.dev, any results matching that pattern will be excluded, such as https://www.firecrawl.dev/blog/firecrawl-launch-week-1-recap.
+- maxDepth: number - Maximum absolute depth to crawl from the base of the entered URL. Basically, the max number of slashes the pathname of a scraped URL may contain. Default: 10
+- maxDiscoveryDepth: number - Maximum depth to crawl based on discovery order. The root site and sitemapped pages has a discovery depth of 0. For example, if you set it to 1, and you set ignoreSitemap, you will only crawl the entered URL and all URLs that are linked on that page.
+- crawlEntireDomain: boolean - Allows the crawler to follow internal links to sibling or parent URLs, not just child paths. false: Only crawls deeper (child) URLs. → e.g. /features/feature-1 → /features/feature-1/tips ✅ → Won't follow /pricing or / ❌. true: Crawls any internal links, including siblings and parents. → e.g. /features/feature-1 → /pricing, /, etc. ✅. Use true for broader internal coverage beyond nested paths. Default: false
+- allowExternalLinks: boolean - Allows the crawler to follow links to external websites. Default: false
+- allowSubdomains: boolean - Allows the crawler to follow links to subdomains of the main domain. Default: false
+- sitemap: "skip" | "include" - Whether to ignore sitemap. Default: "include"
+- ignoreQueryParameters: boolean - Do not re-scrape the same path with different (or none) query parameters. Default: false
+- deduplicateSimilarURLs: boolean - Whether to deduplicate similar URLs
+- delay: number - Delay in seconds between scrapes. This helps respect website rate limits.
+- limit: number - Maximum number of pages to crawl. Default limit is 10000.
+
+Return a JSON object with only the relevant options for the user's request. Don't include options that aren't relevant to the instruction. Focus on the most important options that directly address the user's intent.`,
+          prompt: `Generate crawler options for: ${prompt}`,
+        },
+        costTrackingOptions: {
+          costTracking,
+          metadata: {
+            module: "crawl",
+            method: "generateCrawlerOptionsFromPrompt",
+          },
+        },
+        metadata: {
+          ...metadata,
+          functionId: "generateCrawlerOptionsFromPrompt",
+        },
+      });
+
+      return { extract };
+    } catch (error) {
+      lastError = error as Error;
+      logger.warn(`Failed attempt with temperature ${temp}: ${error.message}`);
+      continue;
+    }
+  }
+
+  throw new Error(
+    `Failed to generate crawler options after all attempts. Last error: ${lastError?.message}`,
   );
 }

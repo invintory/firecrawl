@@ -6,7 +6,6 @@ import {
   batchScrapeRequestSchemaNoURLValidation,
   url as urlSchema,
   RequestWithAuth,
-  ScrapeOptions,
   BatchScrapeResponse,
 } from "./types";
 import {
@@ -14,28 +13,41 @@ import {
   finishCrawlKickoff,
   getCrawl,
   lockURLs,
+  markCrawlActive,
   saveCrawl,
   StoredCrawl,
 } from "../../lib/crawl-redis";
-import { logCrawl } from "../../services/logging/crawl_log";
 import { getJobPriority } from "../../lib/job-priority";
 import { addScrapeJobs } from "../../services/queue-jobs";
-import { callWebhook } from "../../services/webhook";
+import { createWebhookSender, WebhookEvent } from "../../services/webhook";
 import { logger as _logger } from "../../lib/logger";
 import { BLOCKLISTED_URL_MESSAGE } from "../../lib/strings";
-import { isUrlBlocked } from "../../scraper/WebScraper/utils/blocklist";  
+import { isUrlBlocked } from "../../scraper/WebScraper/utils/blocklist";
+import { fromV1ScrapeOptions } from "../v2/types";
+import { checkPermissions } from "../../lib/permissions";
+import { crawlGroup } from "../../services/worker/nuq";
 
 export async function batchScrapeController(
   req: RequestWithAuth<{}, BatchScrapeResponse, BatchScrapeRequest>,
   res: Response<BatchScrapeResponse>,
 ) {
   const preNormalizedBody = { ...req.body };
-
   if (req.body?.ignoreInvalidURLs === true) {
     req.body = batchScrapeRequestSchemaNoURLValidation.parse(req.body);
   } else {
     req.body = batchScrapeRequestSchema.parse(req.body);
   }
+
+  const permissions = checkPermissions(req.body, req.acuc?.flags);
+  if (permissions.error) {
+    return res.status(403).json({
+      success: false,
+      error: permissions.error,
+    });
+  }
+
+  const zeroDataRetention =
+    req.acuc?.flags?.forceZDR || req.body.zeroDataRetention;
 
   const id = req.body.appendToId ?? uuidv4();
   const logger = _logger.child({
@@ -44,9 +56,10 @@ export async function batchScrapeController(
     module: "api/v1",
     method: "batchScrapeController",
     teamId: req.auth.team_id,
+    zeroDataRetention,
   });
 
-  let urls = req.body.urls;
+  let urls: string[] = req.body.urls;
   let unnormalizedURLs = preNormalizedBody.urls;
   let invalidURLs: string[] | undefined = undefined;
 
@@ -70,7 +83,11 @@ export async function batchScrapeController(
       }
     }
   } else {
-    if (req.body.urls?.some((url: string) => isUrlBlocked(url, req.acuc?.flags ?? null))) {
+    if (
+      req.body.urls?.some((url: string) =>
+        isUrlBlocked(url, req.acuc?.flags ?? null),
+      )
+    ) {
       if (!res.headersSent) {
         return res.status(403).json({
           success: false,
@@ -80,33 +97,53 @@ export async function batchScrapeController(
     }
   }
 
+  if (urls.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: "No valid URLs provided",
+    });
+  }
+
   logger.debug("Batch scrape " + id + " starting", {
     urlsLength: urls.length,
     appendToId: req.body.appendToId,
     account: req.account,
   });
 
-  if (!req.body.appendToId) {
-    await logCrawl(id, req.auth.team_id);
-  }
+  const { scrapeOptions, internalOptions } = fromV1ScrapeOptions(
+    req.body,
+    req.body.timeout,
+    req.auth.team_id,
+  );
 
   const sc: StoredCrawl = req.body.appendToId
     ? ((await getCrawl(req.body.appendToId)) as StoredCrawl)
     : {
         crawlerOptions: null,
-        scrapeOptions: req.body,
+        scrapeOptions,
         internalOptions: {
+          ...internalOptions,
           disableSmartWaitCache: true,
           teamId: req.auth.team_id,
-          saveScrapeResultToGCS: process.env.GCS_FIRE_ENGINE_BUCKET_NAME ? true : false,
+          saveScrapeResultToGCS: process.env.GCS_FIRE_ENGINE_BUCKET_NAME
+            ? true
+            : false,
+          zeroDataRetention,
         }, // NOTE: smart wait disabled for batch scrapes to ensure contentful scrape, speed does not matter
         team_id: req.auth.team_id,
         createdAt: Date.now(),
         maxConcurrency: req.body.maxConcurrency,
+        zeroDataRetention,
       };
 
   if (!req.body.appendToId) {
+    await crawlGroup.addGroup(
+      id,
+      sc.team_id,
+      (req.acuc?.flags?.crawlTtlHours ?? 24) * 60 * 60 * 1000,
+    );
     await saveCrawl(id, sc);
+    await markCrawlActive(id);
   }
 
   let jobPriority = 20;
@@ -122,35 +159,26 @@ export async function batchScrapeController(
   }
   logger.debug("Using job priority " + jobPriority, { jobPriority });
 
-  const scrapeOptions: ScrapeOptions = { ...req.body };
-  delete (scrapeOptions as any).urls;
-  delete (scrapeOptions as any).appendToId;
-
-  const jobs = urls.map((x, i) => {
-    return {
-      data: {
-        url: x,
-        mode: "single_urls" as const,
-        team_id: req.auth.team_id,
-        crawlerOptions: null,
-        scrapeOptions,
-        origin: "api",
-        integration: req.body.integration,
-        crawl_id: id,
-        sitemapped: true,
-        v1: true,
-        webhook: req.body.webhook,
-        internalOptions: {
-          saveScrapeResultToGCS: process.env.GCS_FIRE_ENGINE_BUCKET_NAME ? true : false,
-          unnormalizedSourceURL: unnormalizedURLs[i],
-        },
-      },
-      opts: {
-        jobId: uuidv4(),
-        priority: 20,
-      },
-    };
-  });
+  const jobs = urls.map(x => ({
+    jobId: uuidv4(),
+    data: {
+      url: x,
+      mode: "single_urls" as const,
+      team_id: req.auth.team_id,
+      crawlerOptions: null,
+      scrapeOptions,
+      origin: "api",
+      integration: req.body.integration,
+      crawl_id: id,
+      sitemapped: true,
+      v1: true,
+      webhook: req.body.webhook,
+      internalOptions: sc.internalOptions,
+      zeroDataRetention: zeroDataRetention ?? false,
+      apiKeyId: req.acuc?.api_key_id ?? null,
+    },
+    priority: jobPriority,
+  }));
 
   await finishCrawlKickoff(id);
 
@@ -158,12 +186,14 @@ export async function batchScrapeController(
   await lockURLs(
     id,
     sc,
-    jobs.map((x) => x.data.url),
+    jobs.map(x => x.data.url),
+    logger,
   );
   logger.debug("Adding scrape jobs to Redis...");
   await addCrawlJobs(
     id,
-    jobs.map((x) => x.opts.jobId),
+    jobs.map(x => x.jobId),
+    logger,
   );
   logger.debug("Adding scrape jobs to BullMQ...");
   await addScrapeJobs(jobs);
@@ -172,17 +202,16 @@ export async function batchScrapeController(
     logger.debug("Calling webhook with batch_scrape.started...", {
       webhook: req.body.webhook,
     });
-    await callWebhook({
+    const sender = await createWebhookSender({
       teamId: req.auth.team_id,
-      crawlId: id,
-      data: null,
+      jobId: id,
       webhook: req.body.webhook,
-      v1: true,
-      eventType: "batch_scrape.started",
+      v0: false,
     });
+    await sender?.send(WebhookEvent.BATCH_SCRAPE_STARTED, { success: true });
   }
 
-  const protocol = process.env.ENV === "local" ? req.protocol : "https";
+  const protocol = req.protocol;
 
   return res.status(200).json({
     success: true,

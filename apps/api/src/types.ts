@@ -1,45 +1,40 @@
 import { z } from "zod";
 import {
-  AuthCreditUsageChunk,
   BaseScrapeOptions,
   ScrapeOptions,
-  Document as V1Document,
-  webhookSchema,
-} from "./controllers/v1/types";
+  Document as V2Document,
+  TeamFlags,
+} from "./controllers/v2/types";
+import { AuthCreditUsageChunk } from "./controllers/v1/types";
 import { ExtractorOptions, Document } from "./lib/entities";
 import { InternalOptions } from "./scraper/scrapeURL";
-import type { CostTracking } from "./lib/extract/extraction-service";
+import type { CostTracking } from "./lib/cost-tracking";
+import { webhookSchema } from "./services/webhook/schema";
+import { SerializedTraceContext } from "./lib/otel-tracer";
 
-type Mode = "crawl" | "single_urls" | "sitemap";
+type ScrapeJobCommon = {
+  concurrencyLimited?: boolean;
+  team_id: string;
+  zeroDataRetention: boolean;
+  traceContext?: SerializedTraceContext;
+  skipNuq?: boolean;
+};
 
-export { Mode };
+export type ScrapeJobData = ScrapeJobCommon &
+  (
+    | ScrapeJobSingleUrlsUnique
+    | ScrapeJobKickoffUnique
+    | ScrapeJobKickoffSitemapUnique
+  );
 
-export interface CrawlResult {
-  source: string;
-  content: string;
-  options?: {
-    summarize?: boolean;
-    summarize_max_chars?: number;
-  };
-  metadata?: any;
-  raw_context_id?: number | string;
-  permissions?: any[];
-}
+type ScrapeJobSingleUrlsUnique = {
+  mode: "single_urls";
 
-export interface IngestResult {
-  success: boolean;
-  error: string;
-  data: CrawlResult[];
-}
-
-export interface WebScraperOptions {
   url: string;
-  mode: Mode;
   crawlerOptions?: any;
   scrapeOptions: BaseScrapeOptions;
   internalOptions?: InternalOptions;
-  team_id: string;
-  origin?: string;
+  origin: string;
   crawl_id?: string;
   sitemapped?: boolean;
   webhook?: z.infer<typeof webhookSchema>;
@@ -54,33 +49,58 @@ export interface WebScraperOptions {
   isCrawlSourceScrape?: boolean;
   from_extract?: boolean;
   startTime?: number;
-}
+
+  sentry?: any;
+  is_extract?: boolean;
+  apiKeyId: number | null;
+};
+
+export type ScrapeJobSingleUrls = ScrapeJobCommon & ScrapeJobSingleUrlsUnique;
+
+type ScrapeJobKickoffUnique = {
+  mode: "kickoff";
+
+  url: string;
+  crawlerOptions?: any;
+  scrapeOptions: BaseScrapeOptions;
+  internalOptions?: InternalOptions;
+  origin: string;
+  integration?: string | null;
+  crawl_id: string;
+  webhook?: z.infer<typeof webhookSchema>;
+  v1: boolean;
+  apiKeyId: number | null;
+};
+
+export type ScrapeJobKickoff = ScrapeJobCommon & ScrapeJobKickoffUnique;
+
+type ScrapeJobKickoffSitemapUnique = {
+  mode: "kickoff_sitemap";
+
+  crawl_id: string;
+  sitemapUrl: string;
+  location?: ScrapeOptions["location"];
+  origin: string;
+  integration?: string | null;
+  webhook?: z.infer<typeof webhookSchema>;
+  v1: boolean;
+  apiKeyId: number | null;
+};
+
+export type ScrapeJobKickoffSitemap = ScrapeJobCommon &
+  ScrapeJobKickoffSitemapUnique;
 
 export interface RunWebScraperParams {
   url: string;
-  mode: Mode;
   scrapeOptions: ScrapeOptions;
   internalOptions?: InternalOptions;
-  // onSuccess: (result: V1Document, mode: string) => void;
-  // onError: (error: Error) => void;
   team_id: string;
   bull_job_id: string;
   priority?: number;
-  is_scrape?: boolean;
   is_crawl?: boolean;
   urlInvisibleInCurrentCrawl?: boolean;
   costTracking: CostTracking;
 }
-
-export type RunWebScraperResult =
-  | {
-      success: false;
-      error: Error;
-    }
-  | {
-      success: true;
-      document: V1Document;
-    };
 
 export interface FirecrawlJob {
   job_id?: string;
@@ -105,6 +125,9 @@ export interface FirecrawlJob {
   pdf_num_pages?: number;
   credits_billed?: number | null;
   change_tracking_tag?: string | null;
+  dr_clean_by?: string | null;
+
+  zeroDataRetention: boolean;
 }
 
 export interface FirecrawlScrapeResponse {
@@ -130,15 +153,6 @@ export interface FirecrawlCrawlStatusResponse {
   body: {
     status: string;
     data: Document[];
-  };
-  error?: string;
-}
-
-export interface FirecrawlExtractResponse {
-  statusCode: number;
-  body: {
-    success: boolean;
-    data: any[];
   };
   error?: string;
 }
@@ -178,27 +192,3 @@ export enum NotificationType {
   CONCURRENCY_LIMIT_REACHED = "concurrencyLimitReached",
   AUTO_RECHARGE_FREQUENT = "autoRechargeFrequent",
 }
-
-export type ScrapeLog = {
-  url: string;
-  scraper: string;
-  success?: boolean;
-  response_code?: number;
-  time_taken_seconds?: number;
-  proxy?: string;
-  retried?: boolean;
-  error_message?: string;
-  date_added?: string; // ISO 8601 format
-  html?: string;
-  ipv4_support?: boolean | null;
-  ipv6_support?: boolean | null;
-};
-
-export type WebhookEventType =
-  | "crawl.page"
-  | "batch_scrape.page"
-  | "crawl.started"
-  | "batch_scrape.started"
-  | "crawl.completed"
-  | "batch_scrape.completed"
-  | "crawl.failed";

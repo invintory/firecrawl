@@ -1,37 +1,85 @@
-import { Document, ScrapeOptions } from "../controllers/v1/types";
-import { CostTracking } from "./extract/extraction-service";
+import { InternalOptions } from "../scraper/scrapeURL";
+import {
+  Document,
+  ScrapeOptions,
+  TeamFlags,
+  shouldParsePDF,
+} from "../controllers/v2/types";
+import { CostTracking } from "./cost-tracking";
+import { hasFormatOfType } from "./format-utils";
+import { TransportableError } from "./error";
 
 const creditsPerPDFPage = 1;
 const stealthProxyCostBonus = 4;
 
-export async function calculateCreditsToBeBilled(options: ScrapeOptions, document: Document | null, costTracking: CostTracking) {
-    if (document === null) {
-        // Failure -- check cost tracking if FIRE-1
-        let creditsToBeBilled = 0;
+export async function calculateCreditsToBeBilled(
+  options: ScrapeOptions,
+  internalOptions: InternalOptions,
+  document: Document | null,
+  costTracking: CostTracking | ReturnType<typeof CostTracking.prototype.toJSON>,
+  flags: TeamFlags,
+  error?: Error | null,
+) {
+  const costTrackingJSON: ReturnType<typeof CostTracking.prototype.toJSON> =
+    costTracking instanceof CostTracking ? costTracking.toJSON() : costTracking;
 
-        if (options.agent?.model?.toLowerCase() === "fire-1" || options.extract?.agent?.model?.toLowerCase() === "fire-1" || options.jsonOptions?.agent?.model?.toLowerCase() === "fire-1") {
-            creditsToBeBilled = Math.ceil((costTracking.toJSON().totalCost ?? 1) * 1800);
-        } 
-    
-        return creditsToBeBilled;
+  if (document === null) {
+    // Failure -- check cost tracking if FIRE-1
+    let creditsToBeBilled = 0;
+
+    if (
+      internalOptions.v1Agent?.model?.toLowerCase() === "fire-1" ||
+      internalOptions.v1JSONAgent?.model?.toLowerCase() === "fire-1"
+    ) {
+      creditsToBeBilled = Math.ceil((costTrackingJSON.totalCost ?? 1) * 1800);
     }
 
-    let creditsToBeBilled = 1; // Assuming 1 credit per document
-    if ((options.extract && options.formats?.includes("extract")) || (options.formats?.includes("changeTracking") && options.changeTrackingOptions?.modes?.includes("json"))) {
-        creditsToBeBilled = 5;
-    }
-
-    if (options.agent?.model?.toLowerCase() === "fire-1" || options.extract?.agent?.model?.toLowerCase() === "fire-1" || options.jsonOptions?.agent?.model?.toLowerCase() === "fire-1") {
-        creditsToBeBilled = Math.ceil((costTracking.toJSON().totalCost ?? 1) * 1800);
-    } 
-    
-    if (document.metadata.numPages !== undefined && document.metadata.numPages > 1) {
-        creditsToBeBilled += creditsPerPDFPage * (document.metadata.numPages - 1);
-    }
-
-    if (document?.metadata?.proxyUsed === "stealth") {
-        creditsToBeBilled += stealthProxyCostBonus;
+    // Bill for DNS resolution errors
+    if (
+      error instanceof TransportableError &&
+      error.code === "SCRAPE_DNS_RESOLUTION_ERROR"
+    ) {
+      creditsToBeBilled = 1;
     }
 
     return creditsToBeBilled;
+  }
+
+  let creditsToBeBilled = 1; // Assuming 1 credit per document
+  const changeTrackingFormat = hasFormatOfType(
+    options.formats,
+    "changeTracking",
+  );
+  if (
+    hasFormatOfType(options.formats, "json") ||
+    changeTrackingFormat?.modes?.includes("json")
+  ) {
+    creditsToBeBilled = 5;
+  }
+
+  if (
+    internalOptions.v1Agent?.model === "fire-1" ||
+    internalOptions.v1JSONAgent?.model?.toLowerCase() === "fire-1"
+  ) {
+    creditsToBeBilled = Math.ceil((costTrackingJSON.totalCost ?? 1) * 1800);
+  }
+
+  if (internalOptions.zeroDataRetention) {
+    creditsToBeBilled += flags?.zdrCost ?? 1;
+  }
+
+  const shouldParse = shouldParsePDF(options.parsers);
+  if (
+    shouldParse &&
+    document.metadata?.numPages !== undefined &&
+    document.metadata.numPages > 1
+  ) {
+    creditsToBeBilled += creditsPerPDFPage * (document.metadata.numPages - 1);
+  }
+
+  if (document?.metadata?.proxyUsed === "stealth") {
+    creditsToBeBilled += stealthProxyCostBonus;
+  }
+
+  return creditsToBeBilled;
 }

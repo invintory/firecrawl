@@ -6,44 +6,79 @@ import {
   ExtractResponse,
 } from "./types";
 import { getExtractQueue } from "../../services/queue-service";
-import * as Sentry from "@sentry/node";
 import { saveExtract } from "../../lib/extract/extract-redis";
 import { getTeamIdSyncB } from "../../lib/extract/team-id-sync";
-import { performExtraction } from "../../lib/extract/extraction-service";
+import {
+  ExtractResult,
+  performExtraction,
+} from "../../lib/extract/extraction-service";
 import { performExtraction_F0 } from "../../lib/extract/fire-0/extraction-service-f0";
 import { BLOCKLISTED_URL_MESSAGE } from "../../lib/strings";
 import { isUrlBlocked } from "../../scraper/WebScraper/utils/blocklist";
 import { logger as _logger } from "../../lib/logger";
+import { fromV1ScrapeOptions } from "../v2/types";
+import { createWebhookSender, WebhookEvent } from "../../services/webhook";
 
-export async function oldExtract(
+async function oldExtract(
   req: RequestWithAuth<{}, ExtractResponse, ExtractRequest>,
   res: Response<ExtractResponse>,
   extractId: string,
 ) {
   // Means that are in the non-queue system
   // TODO: Remove this once all teams have transitioned to the new system
+
+  const sender = await createWebhookSender({
+    teamId: req.auth.team_id,
+    jobId: extractId,
+    webhook: req.body.webhook,
+    v0: false,
+  });
+
+  sender?.send(WebhookEvent.EXTRACT_STARTED, { success: true });
+
   try {
-    let result;
-    const model = req.body.agent?.model
+    let result: ExtractResult;
+    const model = req.body.agent?.model;
     if (req.body.agent && model && model.toLowerCase().includes("fire-1")) {
       result = await performExtraction(extractId, {
         request: req.body,
         teamId: req.auth.team_id,
         subId: req.acuc?.sub_id ?? undefined,
+        apiKeyId: req.acuc?.api_key_id ?? null,
       });
     } else {
       result = await performExtraction_F0(extractId, {
         request: req.body,
         teamId: req.auth.team_id,
         subId: req.acuc?.sub_id ?? undefined,
+        apiKeyId: req.acuc?.api_key_id ?? null,
       });
+    }
+
+    if (sender) {
+      if (result.success) {
+        sender.send(WebhookEvent.EXTRACT_COMPLETED, {
+          success: true,
+          data: [result],
+        });
+      } else {
+        sender.send(WebhookEvent.EXTRACT_FAILED, {
+          success: false,
+          error: result.error ?? "Unknown error",
+        });
+      }
     }
 
     return res.status(200).json(result);
   } catch (error) {
+    sender?.send(WebhookEvent.EXTRACT_FAILED, {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+
     return res.status(500).json({
       success: false,
-      error: "Internal server error",
+      error: error instanceof Error ? error.message : "Unknown error",
     });
   }
 }
@@ -62,7 +97,20 @@ export async function extractController(
   const originalRequest = { ...req.body };
   req.body = extractRequestSchema.parse(req.body);
 
-  const invalidURLs: string[] = req.body.urls?.filter((url: string) => isUrlBlocked(url, req.acuc?.flags ?? null)) ?? [];
+  if (req.acuc?.flags?.forceZDR) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Your team has zero data retention enabled. This is not supported on extract. Please contact support@firecrawl.com to unblock this feature.",
+    });
+  }
+
+  const invalidURLs: string[] =
+    req.body.urls?.filter((url: string) =>
+      isUrlBlocked(url, req.acuc?.flags ?? null),
+    ) ?? [];
+
+  const createdAt = Date.now();
 
   if (invalidURLs.length > 0 && !req.body.ignoreInvalidURLs) {
     if (!res.headersSent) {
@@ -82,14 +130,28 @@ export async function extractController(
     team_id: req.auth.team_id,
     subId: req.acuc?.sub_id,
     extractId,
+    zeroDataRetention: req.acuc?.flags?.forceZDR,
   });
 
+  const scrapeOptions = req.body.scrapeOptions
+    ? fromV1ScrapeOptions(
+        req.body.scrapeOptions,
+        req.body.scrapeOptions.timeout,
+        req.auth.team_id,
+      ).scrapeOptions
+    : undefined;
+
   const jobData = {
-    request: req.body,
+    request: {
+      ...req.body,
+      scrapeOptions,
+    },
     teamId: req.auth.team_id,
     subId: req.acuc?.sub_id,
     extractId,
     agent: req.body.agent,
+    apiKeyId: req.acuc?.api_key_id ?? null,
+    createdAt,
   };
 
   if (
@@ -105,49 +167,27 @@ export async function extractController(
   await saveExtract(extractId, {
     id: extractId,
     team_id: req.auth.team_id,
-    createdAt: Date.now(),
+    createdAt,
     status: "processing",
     showSteps: req.body.__experimental_streamSteps,
     showLLMUsage: req.body.__experimental_llmUsage,
     showSources: req.body.__experimental_showSources || req.body.showSources,
     showCostTracking: req.body.__experimental_showCostTracking,
+    zeroDataRetention: req.acuc?.flags?.forceZDR,
   });
 
-  if (Sentry.isInitialized()) {
-    const size = JSON.stringify(jobData).length;
-    await Sentry.startSpan(
-      {
-        name: "Add extract job",
-        op: "queue.publish",
-        attributes: {
-          "messaging.message.id": extractId,
-          "messaging.destination.name": getExtractQueue().name,
-          "messaging.message.body.size": size,
-        },
-      },
-      async (span) => {
-        await getExtractQueue().add(extractId, {
-          ...jobData,
-          sentry: {
-            trace: Sentry.spanToTraceHeader(span),
-            baggage: Sentry.spanToBaggageHeader(span),
-            size,
-          },
-        }, { jobId: extractId });
-      },
-    );
-  } else {
-    await getExtractQueue().add(extractId, jobData, {
-      jobId: extractId,
-    });
-  }
+  await getExtractQueue().add(extractId, jobData, {
+    jobId: extractId,
+  });
 
   return res.status(200).json({
     success: true,
     id: extractId,
     urlTrace: [],
-    ...(invalidURLs.length > 0 && req.body.ignoreInvalidURLs ? {
-      invalidURLs,
-    } : {}),
+    ...(invalidURLs.length > 0 && req.body.ignoreInvalidURLs
+      ? {
+          invalidURLs,
+        }
+      : {}),
   });
 }

@@ -8,20 +8,6 @@
      ```
      Replace `password`, `host`, and `port` with the appropriate values.
 
-
-2. Build Docker images, and host it in your Docker Registry (replace the target registry with your own)
-   1. API (which is also used as a worker image)
-      1. ```bash
-         docker build --no-cache --platform linux/amd64 -t ghcr.io/winkk-dev/firecrawl:latest ../../../apps/api
-         docker push ghcr.io/winkk-dev/firecrawl:latest
-         ```
-   2. Playwright 
-      1. ```bash
-            docker build --no-cache --platform linux/amd64 -t ghcr.io/winkk-dev/firecrawl-playwright:latest ../../../apps/playwright-service
-            docker push ghcr.io/winkk-dev/firecrawl-playwright:latest
-         ```
-3. Replace the image in [worker.yaml](worker.yaml), [api.yaml](api.yaml) and [playwright-service.yaml](playwright-service.yaml)
-
 ## Install
 ```bash
 kubectl apply -f configmap.yaml
@@ -29,6 +15,8 @@ kubectl apply -f secret.yaml
 kubectl apply -f playwright-service.yaml
 kubectl apply -f api.yaml
 kubectl apply -f worker.yaml
+kubectl apply -f nuq-worker.yaml
+kubectl apply -f nuq-postgres.yaml
 kubectl apply -f redis.yaml
 ```
 
@@ -45,5 +33,7 @@ kubectl delete -f secret.yaml
 kubectl delete -f playwright-service.yaml
 kubectl delete -f api.yaml
 kubectl delete -f worker.yaml
+kubectl delete -f nuq-worker.yaml
+kubectl delete -f nuq-postgres.yaml
 kubectl delete -f redis.yaml
 ```

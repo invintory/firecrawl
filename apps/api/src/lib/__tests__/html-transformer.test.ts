@@ -2,7 +2,8 @@ import {
   extractLinks,
   extractMetadata,
   transformHtml,
-} from "../html-transformer";
+  TransformHtmlOptions,
+} from "@mendable/firecrawl-rs";
 
 describe("HTML Transformer", () => {
   describe("extractLinks", () => {
@@ -94,12 +95,105 @@ describe("HTML Transformer", () => {
       expect(links).toContain("https://valid.com");
       // Other links should be filtered out or handled appropriately
     });
+
+    it("should handle base href for relative links", async () => {
+      const html = `
+        <html>
+          <head>
+            <base href="/" />
+          </head>
+          <body>
+            <a href="page.php">Page</a>
+            <a href="/absolute">Absolute</a>
+            <a href="https://external.com">External</a>
+          </body>
+        </html>
+      `;
+      const links = await extractLinks(html);
+      expect(links).toContain("page.php");
+      expect(links).toContain("/absolute");
+      expect(links).toContain("https://external.com");
+    });
+
+    it("should handle relative base href", async () => {
+      const html = `
+        <html>
+          <head>
+            <base href="../" />
+          </head>
+          <body>
+            <a href="page.php">Page</a>
+          </body>
+        </html>
+      `;
+      const links = await extractLinks(html);
+      expect(links).toContain("page.php");
+    });
+
+    it("should handle absolute base href", async () => {
+      const html = `
+        <html>
+          <head>
+            <base href="https://cdn.example.com/" />
+          </head>
+          <body>
+            <a href="assets/style.css">CSS</a>
+          </body>
+        </html>
+      `;
+      const links = await extractLinks(html);
+      expect(links).toContain("assets/style.css");
+    });
+
+    it("should use first base href when multiple exist", async () => {
+      const html = `
+        <html>
+          <head>
+            <base href="/" />
+            <base href="/other/" />
+          </head>
+          <body>
+            <a href="page.php">Page</a>
+          </body>
+        </html>
+      `;
+      const links = await extractLinks(html);
+      expect(links).toContain("page.php");
+    });
+
+    it("should fallback to page URL when no base href", async () => {
+      const html = `
+        <html>
+          <body>
+            <a href="page.php">Page</a>
+          </body>
+        </html>
+      `;
+      const links = await extractLinks(html);
+      expect(links).toContain("page.php");
+    });
+
+    it("should handle malformed base href gracefully", async () => {
+      const html = `
+        <html>
+          <head>
+            <base href="" />
+            <base />
+          </head>
+          <body>
+            <a href="page.php">Page</a>
+          </body>
+        </html>
+      `;
+      const links = await extractLinks(html);
+      expect(links).toContain("page.php");
+    });
   });
 
   describe("extractMetadata", () => {
-    it("should return empty array for null or undefined input", async () => {
-      expect(await extractMetadata(null)).toEqual([]);
-      expect(await extractMetadata(undefined)).toEqual([]);
+    it("should return empty object for null or undefined input", async () => {
+      expect(await extractMetadata(null)).toEqual({});
+      expect(await extractMetadata(undefined)).toEqual({});
     });
 
     it("should extract comprehensive metadata from HTML content", async () => {
@@ -171,12 +265,12 @@ describe("HTML Transformer", () => {
 
   describe("transformHtml", () => {
     it("should transform HTML content according to options", async () => {
-      const options = {
+      const options: TransformHtmlOptions = {
         html: "<div><p>Test</p><span>Remove me</span></div>",
         url: "https://example.com",
-        include_tags: ["p"],
-        exclude_tags: ["span"],
-        only_main_content: true,
+        includeTags: ["p"],
+        excludeTags: ["span"],
+        onlyMainContent: true,
       };
 
       const result = await transformHtml(options);
@@ -185,7 +279,7 @@ describe("HTML Transformer", () => {
     });
 
     it("should handle complex content filtering", async () => {
-      const options = {
+      const options: TransformHtmlOptions = {
         html: `
           <div class="wrapper">
             <header>
@@ -204,9 +298,9 @@ describe("HTML Transformer", () => {
           </div>
         `,
         url: "https://example.com",
-        include_tags: ["article", "h1", "p"],
-        exclude_tags: ["nav", "aside", "footer", ".ads", ".social-share"],
-        only_main_content: true,
+        includeTags: ["article", "h1", "p"],
+        excludeTags: ["nav", "aside", "footer", ".ads", ".social-share"],
+        onlyMainContent: true,
       };
 
       const result = await transformHtml(options);
@@ -219,7 +313,7 @@ describe("HTML Transformer", () => {
     });
 
     it("should handle nested content preservation and absolute links", async () => {
-      const options = {
+      const options: TransformHtmlOptions = {
         html: `
           <article>
             <div class="content">
@@ -233,9 +327,9 @@ describe("HTML Transformer", () => {
           </article>
         `,
         url: "https://example.com",
-        include_tags: ["article", "p", "ul", "li"],
-        exclude_tags: [],
-        only_main_content: true,
+        includeTags: ["article", "p", "ul", "li"],
+        excludeTags: [],
+        onlyMainContent: true,
       };
 
       const result = await transformHtml(options);
@@ -245,12 +339,12 @@ describe("HTML Transformer", () => {
     });
 
     it("should handle empty HTML content", async () => {
-      const options = {
+      const options: TransformHtmlOptions = {
         html: "",
         url: "https://example.com",
-        include_tags: [],
-        exclude_tags: [],
-        only_main_content: false,
+        includeTags: [],
+        excludeTags: [],
+        onlyMainContent: false,
       };
 
       const result = await transformHtml(options);
@@ -258,12 +352,12 @@ describe("HTML Transformer", () => {
     });
 
     it("should handle malformed HTML", async () => {
-      const options = {
+      const options: TransformHtmlOptions = {
         html: "<div>Unclosed div",
         url: "https://example.com",
-        include_tags: [],
-        exclude_tags: [],
-        only_main_content: false,
+        includeTags: [],
+        excludeTags: [],
+        onlyMainContent: false,
       };
 
       const result = await transformHtml(options);
@@ -271,7 +365,7 @@ describe("HTML Transformer", () => {
     });
 
     it("should handle HTML with comments and scripts", async () => {
-      const options = {
+      const options: TransformHtmlOptions = {
         html: `
           <div>
             <!-- Comment -->
@@ -282,9 +376,9 @@ describe("HTML Transformer", () => {
           </div>
         `,
         url: "https://example.com",
-        include_tags: ["p"],
-        exclude_tags: ["script", "style", "noscript"],
-        only_main_content: true,
+        includeTags: ["p"],
+        excludeTags: ["script", "style", "noscript"],
+        onlyMainContent: true,
       };
 
       const result = await transformHtml(options);
@@ -295,7 +389,7 @@ describe("HTML Transformer", () => {
     });
 
     it("should handle special characters and encoding", async () => {
-      const options = {
+      const options: TransformHtmlOptions = {
         html: `
           <div>
             <p>&copy; 2024</p>
@@ -305,9 +399,9 @@ describe("HTML Transformer", () => {
           </div>
         `,
         url: "https://example.com",
-        include_tags: ["p"],
-        exclude_tags: [],
-        only_main_content: true,
+        includeTags: ["p"],
+        excludeTags: [],
+        onlyMainContent: true,
       };
 
       const result = await transformHtml(options);
@@ -317,7 +411,7 @@ describe("HTML Transformer", () => {
     });
 
     it("should make all URLs absolute", async () => {
-      const options = {
+      const options: TransformHtmlOptions = {
         html: `
           <div>
             <a href="https://example.com/fullurl">hi</a>
@@ -331,13 +425,13 @@ describe("HTML Transformer", () => {
           </div>
         `,
         url: "https://example.com",
-        include_tags: [],
-        exclude_tags: [],
-        only_main_content: true,
+        includeTags: [],
+        excludeTags: [],
+        onlyMainContent: true,
       };
 
       const result = await transformHtml(options);
-      console.log(result)
+      console.log(result);
       expect(result).toContain("https://example.com/fullurl");
       expect(result).toContain("http://example.net/fullurl");
       expect(result).toContain("https://example.com/pathurl");

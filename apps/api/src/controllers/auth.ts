@@ -1,11 +1,11 @@
 import { parseApi } from "../lib/parseApi";
 import { getRateLimiter } from "../services/rate-limiter";
+import { AuthResponse, NotificationType, RateLimiterMode } from "../types";
 import {
-  AuthResponse,
-  NotificationType,
-  RateLimiterMode,
-} from "../types";
-import { supabase_rr_service, supabase_service } from "../services/supabase";
+  supabase_acuc_only_service,
+  supabase_rr_service,
+  supabase_service,
+} from "../services/supabase";
 import { withAuth } from "../lib/withAuth";
 import { RateLimiterRedis } from "rate-limiter-flexible";
 import { sendNotification } from "../services/notification/email_notification";
@@ -16,20 +16,7 @@ import { setValue } from "../services/redis";
 import { validate } from "uuid";
 import * as Sentry from "@sentry/node";
 import { AuthCreditUsageChunk, AuthCreditUsageChunkFromTeam } from "./v1/types";
-// const { data, error } = await supabase_service
-//     .from('api_keys')
-//     .select(`
-//       key,
-//       team_id,
-//       teams (
-//         subscriptions (
-//           price_id
-//         )
-//       )
-//     `)
-//     .eq('key', normalizedApi)
-//     .limit(1)
-//     .single();
+
 function normalizedApiIsUuid(potentialUuid: string): boolean {
   // Check if the string is a valid UUID
   return validate(potentialUuid);
@@ -47,7 +34,7 @@ export async function setCachedACUC(
   const redLockKey = `lock_${cacheKeyACUC}`;
 
   try {
-    await redlock.using([redLockKey], 10000, {}, async (signal) => {
+    await redlock.using([redLockKey], 10000, {}, async signal => {
       if (typeof acuc === "function") {
         acuc = acuc(JSON.parse((await getValue(cacheKeyACUC)) ?? "null"));
 
@@ -72,8 +59,12 @@ export async function setCachedACUC(
   }
 }
 
-const mockPreviewACUC: (team_id: string, is_extract: boolean) => AuthCreditUsageChunk = (team_id, is_extract) => ({
+const mockPreviewACUC: (
+  team_id: string,
+  is_extract: boolean,
+) => AuthCreditUsageChunk = (team_id, is_extract) => ({
   api_key: "preview",
+  api_key_id: 0,
   team_id,
   sub_id: null,
   sub_current_period_start: null,
@@ -93,6 +84,8 @@ const mockPreviewACUC: (team_id: string, is_extract: boolean) => AuthCreditUsage
     scrapeAgentPreview: 5,
   },
   price_credits: 99999999,
+  price_should_be_graceful: false,
+  price_associated_auto_recharge_price_id: null,
   credits_used: 0,
   coupon_credits: 99999999,
   adjusted_credits_used: 0,
@@ -109,10 +102,13 @@ const mockPreviewACUC: (team_id: string, is_extract: boolean) => AuthCreditUsage
 
 const mockACUC: () => AuthCreditUsageChunk = () => ({
   api_key: "bypass",
+  api_key_id: 0,
   team_id: "bypass",
   sub_id: "bypass",
   sub_current_period_start: new Date().toISOString(),
-  sub_current_period_end: new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+  sub_current_period_end: new Date(
+    new Date().getTime() + 30 * 24 * 60 * 60 * 1000,
+  ).toISOString(),
   sub_user_id: "bypass",
   price_id: "bypass",
   rate_limits: {
@@ -128,6 +124,8 @@ const mockACUC: () => AuthCreditUsageChunk = () => ({
     scrapeAgentPreview: 99999999,
   },
   price_credits: 99999999,
+  price_should_be_graceful: false,
+  price_associated_auto_recharge_price_id: null,
   credits_used: 0,
   coupon_credits: 99999999,
   adjusted_credits_used: 0,
@@ -149,17 +147,20 @@ export async function getACUC(
   mode?: RateLimiterMode,
 ): Promise<AuthCreditUsageChunk | null> {
   let isExtract =
-      mode === RateLimiterMode.Extract ||
-      mode === RateLimiterMode.ExtractStatus ||
-      mode === RateLimiterMode.ExtractAgentPreview;
+    mode === RateLimiterMode.Extract ||
+    mode === RateLimiterMode.ExtractStatus ||
+    mode === RateLimiterMode.ExtractAgentPreview;
 
   if (api_key === process.env.PREVIEW_TOKEN) {
     const acuc = mockPreviewACUC(api_key, isExtract);
     acuc.is_extract = isExtract;
     return acuc;
   }
-  
-  if (process.env.USE_DB_AUTHENTICATION !== "true") {
+
+  if (
+    process.env.USE_DB_AUTHENTICATION !== "true" &&
+    !process.env.SUPABASE_ACUC_URL
+  ) {
     const acuc = mockACUC();
     acuc.is_extract = isExtract;
     return acuc;
@@ -180,11 +181,18 @@ export async function getACUC(
     let retries = 0;
     const maxRetries = 5;
     while (retries < maxRetries) {
-      const client =
-        Math.random() > (2/3) ? supabase_rr_service : supabase_service;
+      const client = !!process.env.SUPABASE_ACUC_URL
+        ? supabase_acuc_only_service
+        : Math.random() > 2 / 3
+          ? supabase_rr_service
+          : supabase_service;
       ({ data, error } = await client.rpc(
-        "auth_credit_usage_chunk_32",
-        { input_key: api_key, i_is_extract: isExtract, tally_untallied_credits: true },
+        "auth_credit_usage_chunk_36",
+        {
+          input_key: api_key,
+          i_is_extract: isExtract,
+          tally_untallied_credits: true,
+        },
         { get: true },
       ));
 
@@ -194,7 +202,7 @@ export async function getACUC(
 
       logger.warn(
         `Failed to retrieve authentication and credit usage data after ${retries}, trying again...`,
-        { error }
+        { error },
       );
       retries++;
       if (retries === maxRetries) {
@@ -205,12 +213,12 @@ export async function getACUC(
       }
 
       // Wait for a short time before retrying
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
 
     const chunk: AuthCreditUsageChunk | null =
       data.length === 0 ? null : data[0].team_id === null ? null : data[0];
-    
+
     if (chunk) {
       chunk.is_extract = isExtract;
     }
@@ -232,13 +240,15 @@ export async function setCachedACUCTeam(
   acuc:
     | AuthCreditUsageChunkFromTeam
     | null
-    | ((acuc: AuthCreditUsageChunkFromTeam) => AuthCreditUsageChunkFromTeam | null),
+    | ((
+        acuc: AuthCreditUsageChunkFromTeam,
+      ) => AuthCreditUsageChunkFromTeam | null),
 ) {
   const cacheKeyACUC = `acuc_team_${team_id}_${is_extract ? "extract" : "scrape"}`;
   const redLockKey = `lock_${cacheKeyACUC}`;
 
   try {
-    await redlock.using([redLockKey], 10000, {}, async (signal) => {
+    await redlock.using([redLockKey], 10000, {}, async signal => {
       if (typeof acuc === "function") {
         acuc = acuc(JSON.parse((await getValue(cacheKeyACUC)) ?? "null"));
 
@@ -270,16 +280,19 @@ export async function getACUCTeam(
   mode?: RateLimiterMode,
 ): Promise<AuthCreditUsageChunkFromTeam | null> {
   let isExtract =
-      mode === RateLimiterMode.Extract ||
-      mode === RateLimiterMode.ExtractStatus ||
-      mode === RateLimiterMode.ExtractAgentPreview;
+    mode === RateLimiterMode.Extract ||
+    mode === RateLimiterMode.ExtractStatus ||
+    mode === RateLimiterMode.ExtractAgentPreview;
 
   if (team_id.startsWith("preview")) {
     const acuc = mockPreviewACUC(team_id, isExtract);
     return acuc;
   }
-  
-  if (process.env.USE_DB_AUTHENTICATION !== "true") {
+
+  if (
+    process.env.USE_DB_AUTHENTICATION !== "true" &&
+    !process.env.SUPABASE_ACUC_URL
+  ) {
     const acuc = mockACUC();
     acuc.is_extract = isExtract;
     return acuc;
@@ -299,13 +312,20 @@ export async function getACUCTeam(
     let error;
     let retries = 0;
     const maxRetries = 5;
-    
+
     while (retries < maxRetries) {
-      const client =
-        Math.random() > (2/3) ? supabase_rr_service : supabase_service;
+      const client = !!process.env.SUPABASE_ACUC_URL
+        ? supabase_acuc_only_service
+        : Math.random() > 2 / 3
+          ? supabase_rr_service
+          : supabase_service;
       ({ data, error } = await client.rpc(
-        "auth_credit_usage_chunk_32_from_team",
-        { input_team: team_id, i_is_extract: isExtract, tally_untallied_credits: true },
+        "auth_credit_usage_chunk_36_from_team",
+        {
+          input_team: team_id,
+          i_is_extract: isExtract,
+          tally_untallied_credits: true,
+        },
         { get: true },
       ));
 
@@ -315,7 +335,7 @@ export async function getACUCTeam(
 
       logger.warn(
         `Failed to retrieve authentication and credit usage data after ${retries}, trying again...`,
-        { error }
+        { error },
       );
       retries++;
       if (retries === maxRetries) {
@@ -326,7 +346,7 @@ export async function getACUCTeam(
       }
 
       // Wait for a short time before retrying
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
 
     const chunk: AuthCreditUsageChunk | null =
@@ -347,7 +367,7 @@ export async function clearACUC(api_key: string): Promise<void> {
   // Delete cache for all rate limiter modes
   const modes = [true, false];
   await Promise.all(
-    modes.map(async (mode) => {
+    modes.map(async mode => {
       const cacheKey = `acuc_${api_key}_${mode ? "extract" : "scrape"}`;
       await deleteKey(cacheKey);
     }),
@@ -361,7 +381,7 @@ export async function clearACUCTeam(team_id: string): Promise<void> {
   // Delete cache for all rate limiter modes
   const modes = [true, false];
   await Promise.all(
-    modes.map(async (mode) => {
+    modes.map(async mode => {
       const cacheKey = `acuc_team_${team_id}_${mode ? "extract" : "scrape"}`;
       await deleteKey(cacheKey);
     }),
@@ -376,6 +396,10 @@ export async function authenticateUser(
   res,
   mode?: RateLimiterMode,
 ): Promise<AuthResponse> {
+  if (!!process.env.SUPABASE_ACUC_URL) {
+    return supaAuthenticateUser(req, res, mode);
+  }
+
   return withAuth(supaAuthenticateUser, {
     success: true,
     chunk: null,
@@ -383,7 +407,7 @@ export async function authenticateUser(
   })(req, res, mode);
 }
 
-export async function supaAuthenticateUser(
+async function supaAuthenticateUser(
   req,
   res,
   mode?: RateLimiterMode,
@@ -405,12 +429,13 @@ export async function supaAuthenticateUser(
     };
   }
 
-  const incomingIP = (req.headers["x-preview-ip"] || req.headers["x-forwarded-for"] ||
+  const incomingIP = (req.headers["x-preview-ip"] ||
+    req.headers["x-forwarded-for"] ||
     req.socket.remoteAddress) as string;
   const iptoken = incomingIP + token;
 
   let rateLimiter: RateLimiterRedis;
-  let subscriptionData: { team_id: string} | null = null;
+  let subscriptionData: { team_id: string } | null = null;
   let normalizedApi: string;
 
   let teamId: string | null = null;

@@ -81,6 +81,7 @@ interface UrlModel {
   timeout?: number;
   headers?: { [key: string]: string };
   check_selector?: string;
+  skip_tls_verification?: boolean;
 }
 
 // Cleanup function to remove temporary directories
@@ -328,11 +329,12 @@ const scrapePage = async (
   if (response) {
     headers = await response.allHeaders();
     ct = Object.entries(headers).find(
-      (x) => x[0].toLowerCase() === "content-type"
+      ([key]) => key.toLowerCase() === "content-type"
     )?.[1];
     if (
       ct &&
-      (ct[1].includes("application/json") || ct[1].includes("text/plain"))
+      (ct.toLowerCase().includes("application/json") ||
+        ct.toLowerCase().includes("text/plain"))
     ) {
       content = (await response.body()).toString("utf8"); // TODO: determine real encoding
     }
@@ -353,6 +355,18 @@ const scrapePage = async (
     networkData,
   };
 };
+
+app.get("/health", async (req: Request, res: Response) => {
+  try {
+    res.status(200).json({ status: "healthy" });
+  } catch (error) {
+    console.error("Health check failed:", error);
+    res.status(503).json({
+      status: "unhealthy",
+      error: error instanceof Error ? error.message : "Unknown error occurred",
+    });
+  }
+});
 
 app.post("/scrape", async (req: Request, res: Response) => {
   const {
