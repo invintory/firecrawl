@@ -12,6 +12,7 @@ import { getError } from "./helpers/get_error";
 import { getResponseFromCache, setResponseInCache } from "./requestCache";
 import { promises as fs } from "fs";
 import logger from "./helpers/logger";
+import { mustGetEnv } from "./helpers/mustGetEnv";
 
 dotenv.config();
 
@@ -20,9 +21,9 @@ const port = process.env.PORT || 3003;
 
 app.use(bodyParser.json());
 
-const PROXY_SERVER = process.env.PROXY_SERVER || null;
-const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
-const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
+const PROXY_SERVER = mustGetEnv("PROXY_SERVER");
+const PROXY_USERNAME = mustGetEnv("PROXY_USERNAME");
+const PROXY_PASSWORD = mustGetEnv("PROXY_PASSWORD");
 
 const AD_SERVING_DOMAINS = [
   "doubleclick.net",

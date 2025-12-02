@@ -1,11 +1,11 @@
 meta {
-  name: Scrape a single URL and optionally extract information using an LLM
+  name: Direct Scrape from Playwright
   type: http
-  seq: 1
+  seq: 6
 }
 
 post {
-  url: {{baseUrl}}/scrape
+  url: http://localhost:3001/scrape
   body: json
   auth: bearer
 }

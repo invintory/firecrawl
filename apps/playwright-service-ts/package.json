@@ -17,9 +17,9 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "ioredis": "^5.6.1",
-    "patchright": "^1.56.1",
+    "patchright": "^1.57.0",
     "pino": "^9.7.0",
-    "playwright": "^1.56.1",
+    "playwright": "^1.57.0",
     "user-agents": "^1.1.410"
   },
   "devDependencies": {

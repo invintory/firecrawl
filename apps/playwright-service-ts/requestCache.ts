@@ -3,24 +3,30 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-let redis: Redis;
+let redis: Redis | undefined;
 
-if (
-  (!process.env.REDIS_HOST ||
-    !process.env.REDIS_PORT ||
-    process.env.REDIS_HOST === "" ||
-    process.env.REDIS_PORT === "") &&
-  process.env.REDIS_CACHE_ENABLED === "true"
-) {
-  throw new Error(
-    "REDIS_HOST and REDIS_PORT must be set when REDIS_CACHE_ENABLED is true"
+const cacheEnabled =
+  process.env.REDIS_CACHE_ENABLED === "true" &&
+  process.env.REDIS_HOST &&
+  process.env.REDIS_HOST !== "" &&
+  process.env.REDIS_PORT &&
+  process.env.REDIS_PORT !== "";
+
+if (cacheEnabled) {
+  console.log(
+    "Connecting to Redis",
+    process.env.REDIS_HOST,
+    process.env.REDIS_PORT
   );
-} else {
   redis = new Redis({
-    host: process.env.REDIS_HOST || "localhost",
-    port: parseInt(process.env.REDIS_PORT || "6379"),
+    host: process.env.REDIS_HOST!,
+    port: parseInt(process.env.REDIS_PORT!),
     db: 2,
   });
+} else {
+  console.log(
+    "Redis cache disabled (REDIS_CACHE_ENABLED, REDIS_HOST, and REDIS_PORT must all be set)"
+  );
 }
 
 export async function getResponseFromCache(url: string): Promise<{
