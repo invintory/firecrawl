@@ -1,4 +1,4 @@
-FROM node:18-slim
+FROM node:24-slim
 
 # Install dependencies for Chromium and Xvfb for headed mode
 RUN apt-get update && apt-get install -y \
