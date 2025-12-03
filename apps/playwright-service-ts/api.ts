@@ -359,6 +359,7 @@ const scrapePage = async (
 
 app.get("/health", async (req: Request, res: Response) => {
   try {
+    console.log("Health check");
     res.status(200).json({ status: "healthy" });
   } catch (error) {
     console.error("Health check failed:", error);
@@ -493,6 +494,14 @@ app.post("/scrape", async (req: Request, res: Response) => {
 app.get("/health", (req: Request, res: Response) => {
   res.json({
     status: "ok",
+  });
+});
+
+// 404 handler for undefined routes
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    error: "Not Found",
+    message: `Cannot ${req.method} ${req.path}`,
   });
 });
 
