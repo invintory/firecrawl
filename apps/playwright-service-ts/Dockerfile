@@ -10,9 +10,9 @@ WORKDIR /usr/src/app
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-# Install Chromium browser and its system dependencies
+# Install Chrome browser and its system dependencies
 # --with-deps installs required apt packages automatically
-RUN pnpm exec patchright install --with-deps chromium
+RUN pnpm exec patchright install --with-deps chrome
 
 COPY . .
 
